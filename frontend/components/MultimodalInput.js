@@ -19,6 +19,7 @@ export default function MultimodalInput({ onSubmit, isLoading }) {
   const [showMediaModal, setShowMediaModal] = useState(false);
   const [recording, setRecording] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingStartTime, setRecordingStartTime] = useState(null);
 
   useEffect(() => {
     return () => {
@@ -48,6 +49,7 @@ export default function MultimodalInput({ onSubmit, isLoading }) {
       );
       setRecording(newRecording);
       setIsRecording(true);
+      setRecordingStartTime(Date.now());
       console.log('Recording started');
     } catch (err) {
       console.error('Failed to start recording', err);
@@ -57,6 +59,23 @@ export default function MultimodalInput({ onSubmit, isLoading }) {
 
   const stopRecording = async () => {
     if (!recording) return;
+    const duration = recordingStartTime ? Date.now() - recordingStartTime : 0;
+
+    if (duration < 1000) {
+      console.log('Recording is too short:', duration, 'ms');
+      Alert.alert('ریکارڈنگ مختصر ہے', 'آواز واضح طور پر ریکارڈ نہیں ہوئی۔ براہ کرم دوبارہ کوشش کریں۔');
+      try {
+        setIsRecording(false);
+        await recording.stopAndUnloadAsync().catch(() => {});
+      } catch (e) {
+        console.log("Error discarding short recording:", e);
+      } finally {
+        setRecording(null);
+        setRecordingStartTime(null);
+      }
+      return;
+    }
+
     try {
       console.log('Stopping recording...');
       setIsRecording(false);
@@ -64,6 +83,7 @@ export default function MultimodalInput({ onSubmit, isLoading }) {
       const uri = recording.getURI();
       console.log('Recording stopped and stored at', uri);
       setRecording(null);
+      setRecordingStartTime(null);
       
       if (uri) {
         onSubmit({
@@ -75,13 +95,14 @@ export default function MultimodalInput({ onSubmit, isLoading }) {
           longitude: null,
         });
       } else {
-        Alert.alert('غلطی', 'آواز موصول نہیں ہوئی۔ براہ کرم دوبارہ ریکارڈ کریں۔');
+        Alert.alert('غلطی', 'آواز واضح طور پر ریکارڈ نہیں ہوئی۔ براہ کرم دوبارہ کوشش کریں۔');
       }
     } catch (err) {
       console.error('Failed to stop recording', err);
-      Alert.alert('غلطی', 'ریکارڈنگ روکنے میں ناکامی ہوئی۔');
+      Alert.alert('غلطی', 'آواز واضح طور پر ریکارڈ نہیں ہوئی۔ براہ کرم دوبارہ کوشش کریں۔');
       setIsRecording(false);
       setRecording(null);
+      setRecordingStartTime(null);
     }
   };
 
