@@ -5,7 +5,7 @@
 // or use an ngrok URL.
 // Example: const BASE_URL = 'http://192.168.1.100:8000';
 
-const BASE_URL = 'http://192.168.1.19:8000';
+const BASE_URL = 'https://kissaanai-2-45iy.onrender.com';
 const API_URL = `${BASE_URL}/analyze`;
 const TIMEOUT_MS = 60000; // 60 seconds
 

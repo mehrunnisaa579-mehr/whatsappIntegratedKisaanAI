@@ -287,6 +287,13 @@ export default function App() {
         console.log("Reusing pre-generated audio URL:", finalAudioUrl);
       }
 
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        shouldRouteThroughEarpieceAndroid: false,
+        staysActiveInBackground: false,
+      }).catch(e => console.log("Error setting audio mode:", e));
+
       const { sound } = await Audio.Sound.createAsync(
         { uri: finalAudioUrl },
         { shouldPlay: true }
@@ -547,6 +554,13 @@ export default function App() {
               await soundRef.current.unloadAsync().catch(() => {});
               soundRef.current = null;
             }
+
+            await Audio.setAudioModeAsync({
+              allowsRecordingIOS: false,
+              playsInSilentModeIOS: true,
+              shouldRouteThroughEarpieceAndroid: false,
+              staysActiveInBackground: false,
+            }).catch(e => console.log("Error setting audio mode:", e));
 
             const { sound } = await Audio.Sound.createAsync(
               { uri: result.audio_url },
