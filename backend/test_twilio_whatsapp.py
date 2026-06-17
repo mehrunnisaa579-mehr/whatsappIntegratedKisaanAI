@@ -49,8 +49,8 @@ def test_twilio_webhook_text_flow():
     
     for path in ["/whatsapp", "/webhook/twilio/whatsapp"]:
         print(f"Testing text flow on path: {path}")
-        # Patch the analyze_crop function so no real Gemini/RAG/weather APIs are called
-        with patch("routers.twilio_whatsapp.analyze_crop", new_callable=AsyncMock) as mock_analyze:
+        # Patch the run_crop_analysis function so no real Gemini/RAG/weather APIs are called
+        with patch("routers.twilio_whatsapp.run_crop_analysis", new_callable=AsyncMock) as mock_analyze:
             mock_analyze.return_value = {
                 "status": "success",
                 "farmer_response": mock_advice

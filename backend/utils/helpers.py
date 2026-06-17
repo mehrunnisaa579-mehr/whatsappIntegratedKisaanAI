@@ -113,6 +113,9 @@ def infer_crop(text: str, explicit_crop: str = None) -> str:
     Infer the crop from explicit parameter or text keywords.
     Returns crop name or 'Unknown'.
     """
+    if not isinstance(explicit_crop, str):
+        explicit_crop = ""
+
     # Prefer explicitly passed crop
     if explicit_crop and explicit_crop.strip():
         # Normalize against known crops

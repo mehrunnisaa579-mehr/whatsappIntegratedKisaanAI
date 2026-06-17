@@ -29,24 +29,13 @@ _FALLBACK_FARMER_RESPONSE = (
 )
 
 
-@router.post("/analyze")
-async def analyze_crop(
-    text: Optional[str] = Form(None),
-    crop: Optional[str] = Form(None),
-    latitude: Optional[float] = Form(None),
-    longitude: Optional[float] = Form(None),
-    image: Optional[UploadFile] = File(None),
+async def run_crop_analysis(
+    text: Optional[str] = None,
+    crop: Optional[str] = None,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+    image: Optional[UploadFile] = None,
 ):
-    """
-    Main analysis endpoint.
-
-    Accepts multipart/form-data with optional text, crop, coordinates,
-    and image. Runs the input through a 7-agent mock pipeline and
-    returns a structured JSON response compatible with the frontend.
-
-    farmer_response is guaranteed to always be a non-empty Urdu string.
-    """
-
     try:
         t_total_start = time.perf_counter()
         
@@ -138,7 +127,7 @@ async def analyze_crop(
         }
 
     except Exception as exc:
-        logger.exception("Pipeline error in /analyze: %s", exc)
+        logger.exception("Pipeline error in run_crop_analysis: %s", exc)
         return {
             "status": "success",
             "input_summary": {
@@ -169,4 +158,37 @@ async def analyze_crop(
                 "working_model": None
             },
         }
+
+
+@router.post("/analyze")
+async def analyze_crop(
+    text: Optional[str] = Form(None),
+    crop: Optional[str] = Form(None),
+    latitude: Optional[float] = Form(None),
+    longitude: Optional[float] = Form(None),
+    image: Optional[UploadFile] = File(None),
+):
+    """
+    Main analysis endpoint.
+
+    Accepts multipart/form-data with optional text, crop, coordinates,
+    and image. Runs the input through a 7-agent mock pipeline and
+    returns a structured JSON response compatible with the frontend.
+
+    farmer_response is guaranteed to always be a non-empty Urdu string.
+    """
+    # Resolve Form objects to strings if they are missing or are Form class instances
+    resolved_text = text if isinstance(text, str) else None
+    resolved_crop = crop if isinstance(crop, str) else None
+    resolved_latitude = latitude if isinstance(latitude, (int, float)) else None
+    resolved_longitude = longitude if isinstance(longitude, (int, float)) else None
+    resolved_image = image if (image is not None and getattr(image, "filename", "") != "") else None
+
+    return await run_crop_analysis(
+        text=resolved_text,
+        crop=resolved_crop,
+        latitude=resolved_latitude,
+        longitude=resolved_longitude,
+        image=resolved_image,
+    )
 

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Form, Response
 import logging
 import xml.sax.saxutils as saxutils
-from routers.analyze import analyze_crop
+from routers.analyze import run_crop_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ async def twilio_whatsapp_webhook(
     else:
         try:
             # Call the existing FarmAI analysis pipeline
-            analysis_result = await analyze_crop(text=body_text)
+            analysis_result = await run_crop_analysis(text=body_text)
             farmer_response = analysis_result.get("farmer_response")
             if not farmer_response:
                 farmer_response = (
