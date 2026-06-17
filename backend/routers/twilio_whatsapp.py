@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+@router.post("/whatsapp")
 @router.post("/webhook/twilio/whatsapp")
 async def twilio_whatsapp_webhook(
     From: str = Form(None),
@@ -18,7 +19,7 @@ async def twilio_whatsapp_webhook(
     body_text = Body.strip() if Body else ""
     body_length = len(body_text)
     
-    logger.info("Received Twilio WhatsApp webhook: From=%s, To=%s, MessageSid=%s, NumMedia=%d, BodyLength=%d", From, To, MessageSid, NumMedia, body_length)
+    logger.info("Twilio WhatsApp webhook hit: From=%s, To=%s, MessageSid=%s, NumMedia=%d, BodyLength=%d, Body=%s", From, To, MessageSid, NumMedia, body_length, body_text)
     
     if not body_text and NumMedia == 0:
         farmer_response = "خوش آمدید! براہ کرم اپنی فصل کا نام یا کوئی زرعی سوال لکھ کر بھیجیں تاکہ فارم اے آئی آپ کی رہنمائی کر سکے۔"
