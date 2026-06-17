@@ -9,7 +9,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from routers import health, analyze, weather, tts, voice
+from routers import health, analyze, weather, tts, voice, twilio_whatsapp
 
 app = FastAPI(
     title="FarmAI",
@@ -30,6 +30,7 @@ app.include_router(analyze.router)
 app.include_router(weather.router)
 app.include_router(tts.router)
 app.include_router(voice.router)
+app.include_router(twilio_whatsapp.router)
 
 # Ensure static directory exists
 STATIC_DIR = backend_dir / "static"
