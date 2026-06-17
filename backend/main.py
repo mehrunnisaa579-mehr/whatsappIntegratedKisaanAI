@@ -32,9 +32,6 @@ app.include_router(tts.router)
 app.include_router(voice.router)
 
 # Ensure static directory exists
-import mimetypes
-mimetypes.add_type("audio/wav", ".wav")
-
 STATIC_DIR = backend_dir / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 (STATIC_DIR / "audio").mkdir(parents=True, exist_ok=True)
