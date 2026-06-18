@@ -6,4 +6,4 @@ requests
 python-dotenv
 google-generativeai
 pillow
-
+httpx
