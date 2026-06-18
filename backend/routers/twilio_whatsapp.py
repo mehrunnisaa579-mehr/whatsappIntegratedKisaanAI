@@ -141,6 +141,7 @@ async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, requ
             )
             return
             
+        logger.info("WhatsApp TTS audio generated successfully for audio summary.")
         filename = tts_result["filename"]
         
         # Build public absolute media URL
@@ -155,7 +156,7 @@ async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, requ
                     base_url = "https://" + base_url[7:]
                     
         audio_url = f"{base_url}/static/audio/{filename}"
-        logger.info("Outbound media URL constructed: %s", audio_url)
+        logger.info("Generated WhatsApp TTS audio URL: %s", audio_url)
         
         # Send media message via Twilio outbound helper
         success = await send_twilio_whatsapp_message(
