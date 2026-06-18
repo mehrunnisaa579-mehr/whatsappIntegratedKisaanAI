@@ -7,7 +7,7 @@ import io
 import time
 from starlette.datastructures import Headers
 from routers.analyze import run_crop_analysis
-from services.tts_service import generate_tts_audio
+from services.tts_service import generate_tts_audio, STATIC_AUDIO_DIR
 from services.gemini_service import generate_safe_tts_summary
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,11 @@ async def send_twilio_whatsapp_message(to_number: str, body: str = None, media_u
     """
     Sends an outbound WhatsApp message or media (audio) to a farmer via Twilio.
     """
+    outbound_enabled = os.environ.get("TWILIO_OUTBOUND_ENABLED", "true").lower() == "true"
+    if not outbound_enabled:
+        logger.info("Twilio outbound skipped because TWILIO_OUTBOUND_ENABLED=false")
+        return True
+
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
     from_number = os.environ.get("TWILIO_WHATSAPP_FROM")
@@ -72,6 +77,56 @@ async def send_twilio_whatsapp_message(to_number: str, body: str = None, media_u
         logger.error("Failed to send Twilio WhatsApp message/media to %s: %s", to_number, str(e))
         return False
 
+def generate_tts_summary_file(text_to_speak: str, request: Request = None) -> dict:
+    """
+    Helper to generate TTS audio and return metadata.
+    Returns dict with keys: success, file_path, media_url, format, error_message
+    """
+    try:
+        tts_result = generate_tts_audio(text_to_speak)
+        if not tts_result.get("success"):
+            return {
+                "success": False,
+                "file_path": None,
+                "media_url": None,
+                "format": None,
+                "error_message": tts_result.get("message", "TTS generation failed")
+            }
+            
+        filename = tts_result["filename"]
+        file_path = os.path.join(STATIC_AUDIO_DIR, filename)
+        
+        # Build public absolute media URL
+        public_base_url = os.environ.get("PUBLIC_BASE_URL")
+        if public_base_url:
+            base_url = public_base_url.rstrip('/')
+        elif request is not None:
+            base_url = str(request.base_url).rstrip('/')
+            if not any(lh in base_url for lh in ("localhost", "127.0.0.1", "0.0.0.0")):
+                if base_url.startswith("http://"):
+                    base_url = "https://" + base_url[7:]
+        else:
+            base_url = "https://localhost"
+            
+        audio_url = f"{base_url}/static/audio/{filename}"
+        
+        return {
+            "success": True,
+            "file_path": file_path,
+            "media_url": audio_url,
+            "format": "wav",
+            "error_message": None
+        }
+    except Exception as e:
+        logger.error("Error in generate_tts_summary_file: %s", str(e))
+        return {
+            "success": False,
+            "file_path": None,
+            "media_url": None,
+            "format": None,
+            "error_message": str(e)
+        }
+
 async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, request: Request):
     """
     Background task to generate TTS audio and send it as a WhatsApp media message.
@@ -79,31 +134,17 @@ async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, requ
     try:
         logger.info("Background task: generating TTS audio for %s", to_number)
         
-        # Generate audio using existing tts_service
-        tts_result = generate_tts_audio(text_to_speak)
+        result = generate_tts_summary_file(text_to_speak, request)
         
-        if not tts_result.get("success"):
-            logger.error("Failed to generate TTS audio in background: %s", tts_result.get("message"))
+        if not result["success"]:
+            logger.error("Failed to generate TTS audio in background: %s", result["error_message"])
             await send_twilio_whatsapp_message(
                 to_number=to_number,
                 body="Sorry, FarmAI could not generate the audio summary right now."
             )
             return
             
-        filename = tts_result["filename"]
-        
-        # Build public absolute media URL
-        public_base_url = os.environ.get("PUBLIC_BASE_URL")
-        if public_base_url:
-            base_url = public_base_url.rstrip('/')
-        else:
-            base_url = str(request.base_url).rstrip('/')
-            # Force HTTPS on non-localhost for Twilio production compatibility
-            if not any(lh in base_url for lh in ("localhost", "127.0.0.1", "0.0.0.0")):
-                if base_url.startswith("http://"):
-                    base_url = "https://" + base_url[7:]
-                    
-        audio_url = f"{base_url}/static/audio/{filename}"
+        audio_url = result["media_url"]
         logger.info("Outbound media URL constructed: %s", audio_url)
         
         # Send media message via Twilio outbound helper
@@ -113,6 +154,7 @@ async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, requ
         )
         if not success:
             logger.error("Failed to send outbound TTS audio message to %s", to_number)
+            # Try to send fallback text only once, do not retry / loop
             await send_twilio_whatsapp_message(
                 to_number=to_number,
                 body="Sorry, FarmAI could not generate the audio summary right now."

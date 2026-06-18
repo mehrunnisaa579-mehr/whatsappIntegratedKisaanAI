@@ -136,9 +136,9 @@ def generate_tts_audio(text: str, language_hint: str = None) -> dict:
                     selected_model = normalized_available[p_clean]
                     break
                     
-            if not selected_model and available_models:
-                # Fallback to any model in list
-                selected_model = available_models[0]
+            if not selected_model:
+                selected_model = "models/gemini-2.5-flash-preview-tts"
+                logger.info("Auto-discovery fallback to default model: %s", selected_model)
                 
         if not selected_model:
             logger.error("No valid Gemini model available for TTS generation.")
@@ -226,12 +226,8 @@ def generate_tts_audio(text: str, language_hint: str = None) -> dict:
                         pcm_bytes = part.inline_data.data
                         
             if not pcm_bytes:
-                logger.error("Model did not return valid inline audio bytes.")
-                return {
-                    "success": False,
-                    "error_type": "empty_response",
-                    "message": "آواز بنانے میں مسئلہ آ رہا ہے، دوبارہ کوشش کریں۔"
-                }
+                logger.error("Model did not return valid inline audio bytes. Response object: %s", response)
+                raise ValueError("empty_response: Model did not return valid inline audio bytes.")
                 
             # Convert PCM to playable WAV
             wav_bytes = pcm_to_wav(pcm_bytes)
@@ -258,17 +254,7 @@ def generate_tts_audio(text: str, language_hint: str = None) -> dict:
         except Exception as exc:
             err_type, err_msg = classify_gemini_error(exc)
             logger.exception("Error in TTS service API execution: %s", err_msg)
-            if err_type in ("quota_or_rate_limit", "invalid_api_key"):
-                raise exc
-            return {
-                "success": False,
-                "error_type": err_type,
-                "message": "آواز بنانے میں مسئلہ آ رہا ہے، دوبارہ کوشش کریں۔",
-                "tts_status": {
-                    "success": False,
-                    "error_type": err_type
-                }
-            }
+            raise exc
 
     # Execute with key rotation using the TTS pool
     rotation_res = run_with_key_rotation("TTS", _execute_tts)

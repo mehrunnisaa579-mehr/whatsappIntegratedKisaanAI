@@ -197,7 +197,7 @@ def run_with_key_rotation(pool_name: str, callable_fn):
                     "error_message": err_msg
                 })
                 
-                if err_type in ("quota_or_rate_limit", "invalid_api_key"):
+                if err_type in ("quota_or_rate_limit", "invalid_api_key") or (pool_name == "TTS" and err_type not in ("empty_input",)):
                     logger.warning("[Rotation Engine] Pool %s Key Index %d failed: %s", pool_name, idx + 1, err_type)
                     print(f"[Rotation Engine] Pool {pool_name} Key Index {idx + 1} failed: {err_type}")
                     continue
@@ -241,7 +241,7 @@ def run_with_key_rotation(pool_name: str, callable_fn):
                 "error_message": err_msg
             })
             
-            if err_type in ("quota_or_rate_limit", "invalid_api_key"):
+            if err_type in ("quota_or_rate_limit", "invalid_api_key") or (pool_name == "TTS" and err_type not in ("empty_input",)):
                 logger.warning("[Rotation Engine] Pool %s Key Index %d failed: %s", pool_name, idx + 1, err_type)
                 print(f"[Rotation Engine] Pool {pool_name} Key Index {idx + 1} failed: {err_type}")
                 continue

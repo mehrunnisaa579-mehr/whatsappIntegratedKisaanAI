@@ -10,6 +10,7 @@ from routers.twilio_whatsapp import (
     conversation_states,
     analyze_image_in_background,
     generate_and_send_tts_summary,
+    generate_tts_summary_file,
     send_twilio_whatsapp_message
 )
 
@@ -196,14 +197,71 @@ def test_twilio_webhook_image_flow_and_background_task():
     
     print("Image Flow and Background Task tests passed successfully!")
 
+def test_generate_tts_summary_file():
+    print("\nRunning generate_tts_summary_file helper tests...")
+    mock_request = MagicMock(spec=Request)
+    mock_request.base_url = "http://testserver/"
+    
+    # 1. Successful file generation
+    with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
+         patch.dict("os.environ", {"PUBLIC_BASE_URL": ""}):
+        mock_generate_tts.return_value = {
+            "success": True,
+            "filename": "tts_test_file.wav"
+        }
+        res = generate_tts_summary_file("ٹیسٹ آڈیو خلاصہ", mock_request)
+        assert res["success"] is True
+        assert res["format"] == "wav"
+        assert "tts_test_file.wav" in res["file_path"]
+        assert res["media_url"] == "https://testserver/static/audio/tts_test_file.wav"
+        
+    # 2. Failure case
+    with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts:
+        mock_generate_tts.return_value = {
+            "success": False,
+            "message": "Quota error"
+        }
+        res = generate_tts_summary_file("ٹیسٹ آڈیو خلاصہ", mock_request)
+        assert res["success"] is False
+        assert res["error_message"] == "Quota error"
+        
+    print("generate_tts_summary_file tests passed successfully!")
+
+def test_twilio_outbound_enabled_flag():
+    print("\nRunning test for TWILIO_OUTBOUND_ENABLED flag...")
+    # 1. When TWILIO_OUTBOUND_ENABLED=false, call should be skipped and return True without HTTP call
+    with patch.dict("os.environ", {"TWILIO_OUTBOUND_ENABLED": "false"}):
+        import asyncio
+        res = asyncio.run(send_twilio_whatsapp_message(
+            to_number="whatsapp:+923001234567",
+            body="hello"
+        ))
+        assert res is True
+        
+    # 2. When TWILIO_OUTBOUND_ENABLED=true, it should perform the HTTP POST request (which we mock)
+    with patch.dict("os.environ", {"TWILIO_OUTBOUND_ENABLED": "true"}), \
+         patch("httpx.AsyncClient.post") as mock_post:
+             
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"sid": "SM123"})
+        import asyncio
+        res = asyncio.run(send_twilio_whatsapp_message(
+            to_number="whatsapp:+923001234567",
+            body="hello"
+        ))
+        assert res is True
+        mock_post.assert_called_once()
+        
+    print("TWILIO_OUTBOUND_ENABLED flag tests passed successfully!")
+
 def test_generate_and_send_tts_summary_background_task():
     print("\nRunning background TTS generation and sending task tests...")
     mock_request = MagicMock(spec=Request)
     mock_request.base_url = "http://testserver/"
     
-    # 1. Test Successful TTS Generation
+    # 1. Test Successful TTS Generation (Ensure TWILIO_OUTBOUND_ENABLED=true so mock_send is called)
     with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
-         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send:
+         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send, \
+         patch.dict("os.environ", {"TWILIO_OUTBOUND_ENABLED": "true", "PUBLIC_BASE_URL": ""}):
              
         mock_generate_tts.return_value = {
             "success": True,
@@ -274,5 +332,8 @@ if __name__ == "__main__":
     test_twilio_webhook_skeleton()
     test_twilio_webhook_text_flow_and_state_transitions()
     test_twilio_webhook_image_flow_and_background_task()
+    test_generate_tts_summary_file()
+    test_twilio_outbound_enabled_flag()
     test_generate_and_send_tts_summary_background_task()
     test_tts_standalone_endpoint()
+
