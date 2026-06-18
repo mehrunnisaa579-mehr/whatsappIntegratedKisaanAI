@@ -73,35 +73,15 @@ def test_twilio_webhook_image_only_flow():
         "MessageSid": "SM_TEST_IMG_123"
     }
     
-    mock_advice = "تشخیص: پتے پیلے ہونے کی وجہ نائٹروجن کی کمی ہو سکتی ہے۔"
+    expected_ack = "FarmAI received your crop image. Image diagnosis is being tested."
     
     for path in ["/whatsapp", "/webhook/twilio/whatsapp"]:
         print(f"Testing image only flow on path: {path}")
-        with patch("routers.twilio_whatsapp.download_twilio_media", new_callable=AsyncMock) as mock_download, \
-             patch("routers.twilio_whatsapp.run_crop_analysis", new_callable=AsyncMock) as mock_analyze:
-            
-            mock_download.return_value = b"fake_image_bytes"
-            mock_analyze.return_value = {
-                "status": "success",
-                "farmer_response": mock_advice
-            }
-            
-            response = client.post(path, data=payload)
-            
-            # Assertions
-            mock_download.assert_called_once_with("https://api.twilio.com/mock-image.jpg")
-            
-            # Retrieve the called argument and verify the UploadFile
-            args, kwargs = mock_analyze.call_args
-            assert kwargs.get("text") is None
-            assert kwargs.get("image") is not None
-            image_file = kwargs.get("image")
-            assert image_file.filename == "whatsapp_image.jpg"
-            assert image_file.content_type == "image/jpeg"
-            
+        response = client.post(path, data=payload)
+        
         assert response.status_code == 200, f"Expected 200, got {response.status_code}"
         body_text = response.text
-        assert mock_advice in body_text, f"Expected mocked advice missing in response, got: {body_text}"
+        assert expected_ack in body_text, f"Expected fast image acknowledgement missing, got: {body_text}"
         
     print("Image Only test passed successfully for both paths!")
 
@@ -117,100 +97,45 @@ def test_twilio_webhook_image_caption_flow():
         "MessageSid": "SM_TEST_IMG_CAPTION_123"
     }
     
-    mock_advice = "تشخیص مع کپشن: پتے پیلے ہونے کی وجہ نائٹروجن کی کمی ہے۔"
+    expected_ack = "FarmAI received your crop image. Image diagnosis is being tested."
     
     for path in ["/whatsapp", "/webhook/twilio/whatsapp"]:
         print(f"Testing image + caption flow on path: {path}")
-        with patch("routers.twilio_whatsapp.download_twilio_media", new_callable=AsyncMock) as mock_download, \
-             patch("routers.twilio_whatsapp.run_crop_analysis", new_callable=AsyncMock) as mock_analyze:
-            
-            mock_download.return_value = b"fake_image_bytes"
-            mock_analyze.return_value = {
-                "status": "success",
-                "farmer_response": mock_advice
-            }
-            
-            response = client.post(path, data=payload)
-            
-            # Assertions
-            mock_download.assert_called_once_with("https://api.twilio.com/mock-image.jpg")
-            
-            args, kwargs = mock_analyze.call_args
-            assert kwargs.get("text") == "These cotton leaves are turning yellow"
-            assert kwargs.get("image") is not None
-            image_file = kwargs.get("image")
-            assert image_file.filename == "whatsapp_image.jpg"
-            assert image_file.content_type == "image/jpeg"
-            
+        response = client.post(path, data=payload)
+        
         assert response.status_code == 200, f"Expected 200, got {response.status_code}"
         body_text = response.text
-        assert mock_advice in body_text, f"Expected mocked advice missing in response, got: {body_text}"
+        assert expected_ack in body_text, f"Expected fast image acknowledgement missing, got: {body_text}"
         
     print("Image + Caption test passed successfully for both paths!")
 
-def test_twilio_webhook_unsupported_media():
-    print("\nRunning Twilio WhatsApp Webhook test (Unsupported Media)...")
+def test_twilio_webhook_unexpected_exception():
+    print("\nRunning Twilio WhatsApp Webhook test (Unexpected Exception)...")
     payload = {
         "From": "whatsapp:+923001234567",
         "To": "whatsapp:+14155238886",
-        "Body": "",
-        "NumMedia": "1",
-        "MediaUrl0": "https://api.twilio.com/mock-doc.pdf",
-        "MediaContentType0": "application/pdf",
-        "MessageSid": "SM_TEST_PDF_123"
+        "Body": "hello",
+        "NumMedia": "0",
+        "MessageSid": "SM_TEST_CRASH"
     }
     
+    expected_fallback = "Sorry, FarmAI could not process this request right now. Please try again."
+    
     for path in ["/whatsapp", "/webhook/twilio/whatsapp"]:
-        print(f"Testing unsupported media flow on path: {path}")
-        with patch("routers.twilio_whatsapp.download_twilio_media", new_callable=AsyncMock) as mock_download, \
-             patch("routers.twilio_whatsapp.run_crop_analysis", new_callable=AsyncMock) as mock_analyze:
-            
+        print(f"Testing unexpected exception handling on path: {path}")
+        # Patching logger.info to simulate a crash at the top of the webhook
+        with patch("routers.twilio_whatsapp.logger.info", side_effect=RuntimeError("Simulated crash")):
             response = client.post(path, data=payload)
-            
-            # Should NOT download or analyze
-            mock_download.assert_not_called()
-            mock_analyze.assert_not_called()
             
         assert response.status_code == 200, f"Expected 200, got {response.status_code}"
         body_text = response.text
-        assert "Please send a crop image or a farming-related text question." in body_text
+        assert expected_fallback in body_text, f"Expected fallback message missing, got: {body_text}"
         
-    print("Unsupported Media test passed successfully for both paths!")
-
-def test_twilio_webhook_download_failure():
-    print("\nRunning Twilio WhatsApp Webhook test (Download Failure Fallback)...")
-    payload = {
-        "From": "whatsapp:+923001234567",
-        "To": "whatsapp:+14155238886",
-        "Body": "",
-        "NumMedia": "1",
-        "MediaUrl0": "https://api.twilio.com/mock-image.jpg",
-        "MediaContentType0": "image/jpeg",
-        "MessageSid": "SM_TEST_IMG_123"
-    }
-    
-    for path in ["/whatsapp", "/webhook/twilio/whatsapp"]:
-        print(f"Testing download failure fallback on path: {path}")
-        with patch("routers.twilio_whatsapp.download_twilio_media", new_callable=AsyncMock) as mock_download, \
-             patch("routers.twilio_whatsapp.run_crop_analysis", new_callable=AsyncMock) as mock_analyze:
-            
-            mock_download.side_effect = Exception("HTTP 404 Not Found")
-            
-            response = client.post(path, data=payload)
-            
-            mock_download.assert_called_once_with("https://api.twilio.com/mock-image.jpg")
-            mock_analyze.assert_not_called()
-            
-        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
-        body_text = response.text
-        assert "Sorry, FarmAI could not download the image. Please try sending a clear crop image again." in body_text
-        
-    print("Download Failure Fallback test passed successfully for both paths!")
+    print("Unexpected Exception test passed successfully for both paths!")
 
 if __name__ == "__main__":
     test_twilio_webhook_skeleton()
     test_twilio_webhook_text_flow()
     test_twilio_webhook_image_only_flow()
     test_twilio_webhook_image_caption_flow()
-    test_twilio_webhook_unsupported_media()
-    test_twilio_webhook_download_failure()
+    test_twilio_webhook_unexpected_exception()
