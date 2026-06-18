@@ -5,9 +5,10 @@ import httpx
 import os
 import io
 import time
+import re
 from starlette.datastructures import Headers
 from routers.analyze import run_crop_analysis
-from services.tts_service import generate_tts_audio, STATIC_AUDIO_DIR
+from services.tts_service import generate_tts_audio
 from services.gemini_service import generate_safe_tts_summary
 
 logger = logging.getLogger(__name__)
@@ -39,11 +40,6 @@ async def send_twilio_whatsapp_message(to_number: str, body: str = None, media_u
     """
     Sends an outbound WhatsApp message or media (audio) to a farmer via Twilio.
     """
-    outbound_enabled = os.environ.get("TWILIO_OUTBOUND_ENABLED", "true").lower() == "true"
-    if not outbound_enabled:
-        logger.info("Twilio outbound skipped because TWILIO_OUTBOUND_ENABLED=false")
-        return True
-
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
     from_number = os.environ.get("TWILIO_WHATSAPP_FROM")
@@ -77,74 +73,88 @@ async def send_twilio_whatsapp_message(to_number: str, body: str = None, media_u
         logger.error("Failed to send Twilio WhatsApp message/media to %s: %s", to_number, str(e))
         return False
 
-def generate_tts_summary_file(text_to_speak: str, request: Request = None) -> dict:
+def sanitize_text_for_tts(text: str) -> str:
     """
-    Helper to generate TTS audio and return metadata.
-    Returns dict with keys: success, file_path, media_url, format, error_message
+    Cleans headings, removes markdown, bullets, emojis, XML/TwiML, URLs,
+    excessive punctuation, colons, and weird symbols.
+    Limits text length to ~650 characters (safe 400-700 range).
     """
-    try:
-        tts_result = generate_tts_audio(text_to_speak)
-        if not tts_result.get("success"):
-            return {
-                "success": False,
-                "file_path": None,
-                "media_url": None,
-                "format": None,
-                "error_message": tts_result.get("message", "TTS generation failed")
-            }
-            
-        filename = tts_result["filename"]
-        file_path = os.path.join(STATIC_AUDIO_DIR, filename)
-        
-        # Build public absolute media URL
-        public_base_url = os.environ.get("PUBLIC_BASE_URL")
-        if public_base_url:
-            base_url = public_base_url.rstrip('/')
-        elif request is not None:
-            base_url = str(request.base_url).rstrip('/')
-            if not any(lh in base_url for lh in ("localhost", "127.0.0.1", "0.0.0.0")):
-                if base_url.startswith("http://"):
-                    base_url = "https://" + base_url[7:]
+    if not text:
+        return ""
+    
+    # 1. Remove XML/TwiML tags if any
+    text = re.sub(r'<[^>]*>', '', text)
+    
+    # 2. Remove URLs
+    text = re.sub(r'https?://\S+|www\.\S+', '', text)
+    
+    # 3. Replace colons (:) and dashes with spaces/commas for natural pause
+    text = text.replace(":", ", ").replace("—", " ").replace("-", " ")
+    
+    # 4. Remove emojis and weird symbols (allow letters, numbers, spaces, standard English and Urdu punctuation)
+    text = re.sub(r'[^\w\s\.,\?!\(\)۔\u0600-\u06FF]', '', text)
+    
+    # 5. Remove markdown symbols
+    text = text.replace("**", "").replace("*", "").replace("__", "").replace("_", "")
+    
+    # 6. Remove list bullets and numbers at the start of lines or within text
+    text = re.sub(r'^\s*[-*+•]\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*\d+[\s\.)\-]*', '', text, flags=re.MULTILINE)
+    
+    # 7. Normalize spaces and newlines
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # 8. Limit length to ~650 characters max (within 400-700 range)
+    if len(text) > 650:
+        truncated = text[:650]
+        # Attempt to cut at a sentence ending (either English period or Urdu full stop)
+        last_period = max(truncated.rfind('.'), truncated.rfind('۔'))
+        if last_period > 350:
+            text = truncated[:last_period + 1]
         else:
-            base_url = "https://localhost"
+            text = truncated + "..."
             
-        audio_url = f"{base_url}/static/audio/{filename}"
-        
-        return {
-            "success": True,
-            "file_path": file_path,
-            "media_url": audio_url,
-            "format": "wav",
-            "error_message": None
-        }
-    except Exception as e:
-        logger.error("Error in generate_tts_summary_file: %s", str(e))
-        return {
-            "success": False,
-            "file_path": None,
-            "media_url": None,
-            "format": None,
-            "error_message": str(e)
-        }
+    return text.strip()
 
-async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, request: Request):
+async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, request: Request, language_hint: str = None):
     """
     Background task to generate TTS audio and send it as a WhatsApp media message.
     """
     try:
-        logger.info("Background task: generating TTS audio for %s", to_number)
+        masked_number = to_number[:9] + "..." if to_number else "None"
+        logger.info("Background task: generating TTS audio for %s (language_hint=%s)", masked_number, language_hint)
         
-        result = generate_tts_summary_file(text_to_speak, request)
+        # Safe debug logs: log length and first 120 characters snippet only
+        summary_len = len(text_to_speak) if text_to_speak else 0
+        safe_snippet = text_to_speak[:120] if text_to_speak else ""
+        logger.info("Sanitized TTS Summary Length: %d characters", summary_len)
+        logger.info("Sanitized TTS Summary Snippet (first 120 chars): %s", safe_snippet)
         
-        if not result["success"]:
-            logger.error("Failed to generate TTS audio in background: %s", result["error_message"])
+        # Generate audio using existing tts_service
+        tts_result = generate_tts_audio(text_to_speak, language_hint=language_hint)
+        
+        if not tts_result.get("success"):
+            logger.error("Failed to generate TTS audio in background: %s", tts_result.get("message"))
             await send_twilio_whatsapp_message(
                 to_number=to_number,
                 body="Sorry, FarmAI could not generate the audio summary right now."
             )
             return
             
-        audio_url = result["media_url"]
+        filename = tts_result["filename"]
+        
+        # Build public absolute media URL
+        public_base_url = os.environ.get("PUBLIC_BASE_URL")
+        if public_base_url:
+            base_url = public_base_url.rstrip('/')
+        else:
+            base_url = str(request.base_url).rstrip('/')
+            # Force HTTPS on non-localhost for Twilio production compatibility
+            if not any(lh in base_url for lh in ("localhost", "127.0.0.1", "0.0.0.0")):
+                if base_url.startswith("http://"):
+                    base_url = "https://" + base_url[7:]
+                    
+        audio_url = f"{base_url}/static/audio/{filename}"
         logger.info("Outbound media URL constructed: %s", audio_url)
         
         # Send media message via Twilio outbound helper
@@ -154,7 +164,6 @@ async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, requ
         )
         if not success:
             logger.error("Failed to send outbound TTS audio message to %s", to_number)
-            # Try to send fallback text only once, do not retry / loop
             await send_twilio_whatsapp_message(
                 to_number=to_number,
                 body="Sorry, FarmAI could not generate the audio summary right now."
@@ -249,6 +258,7 @@ async def analyze_image_in_background(
         conversation_states[from_number] = {
             "last_response_text": farmer_response,
             "tts_summary": tts_summary,
+            "language_hint": lang_hint,
             "pending_tts_confirmation": True,
             "updated_at": time.time()
         }
@@ -316,13 +326,26 @@ async def twilio_whatsapp_webhook(
                 # Fast TwiML acknowledgement response
                 farmer_response = "Okay, generating your audio summary now..."
                 
+                # Retrieve language hint
+                lang_hint = user_state.get("language_hint")
+                if not lang_hint:
+                    from utils.helpers import detect_language
+                    lang_hint = detect_language(user_state.get("last_response_text"))
+                
+                text_to_speak = user_state.get("tts_summary")
+                if not text_to_speak:
+                    text_to_speak = generate_safe_tts_summary(user_state.get("last_response_text"), lang_hint)
+                
+                # Sanitize the summary text for TTS engine
+                text_to_speak = sanitize_text_for_tts(text_to_speak)
+                
                 # Spawn TTS generation and send in background
-                text_to_speak = user_state.get("tts_summary") or user_state.get("last_response_text")
                 background_tasks.add_task(
                     generate_and_send_tts_summary,
                     to_number=From,
                     text_to_speak=text_to_speak,
-                    request=request
+                    request=request,
+                    language_hint=lang_hint
                 )
             elif clean_reply in no_values:
                 # Remove conversation state completely
@@ -372,6 +395,7 @@ async def twilio_whatsapp_webhook(
                         conversation_states[From] = {
                             "last_response_text": farmer_response,
                             "tts_summary": tts_summary,
+                            "language_hint": lang_hint,
                             "pending_tts_confirmation": True,
                             "updated_at": time.time()
                         }
