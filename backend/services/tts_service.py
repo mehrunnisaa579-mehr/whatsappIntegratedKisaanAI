@@ -259,3 +259,73 @@ def generate_tts_audio(text: str, language_hint: str = None) -> dict:
                 "key_index_used": rotation_res.get("key_index_used", 0)
             }
         }
+
+def convert_wav_to_ogg_opus(wav_filename: str) -> str:
+    """
+    Converts a WAV file in STATIC_AUDIO_DIR to an OGG file with Opus codec.
+    Returns the generated OGG filename on success, or raises an Exception.
+    """
+    import subprocess
+    import shutil
+    
+    if not wav_filename.endswith(".wav"):
+        raise ValueError("Input file must be a .wav file")
+        
+    ogg_filename = wav_filename[:-4] + ".ogg"
+    
+    wav_path = os.path.join(STATIC_AUDIO_DIR, wav_filename)
+    ogg_path = os.path.join(STATIC_AUDIO_DIR, ogg_filename)
+    
+    # If the OGG file already exists, just return it
+    if os.path.exists(ogg_path):
+        return ogg_filename
+        
+    if not os.path.exists(wav_path):
+        raise FileNotFoundError(f"Source WAV file not found: {wav_path}")
+        
+    # Resolve ffmpeg binary path
+    ffmpeg_bin = "ffmpeg"
+    
+    # Check local directories first
+    local_paths = [
+        "./bin/ffmpeg",
+        "../bin/ffmpeg",
+        "./backend/bin/ffmpeg",
+        "/opt/render/project/src/backend/bin/ffmpeg"
+    ]
+    for path in local_paths:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            ffmpeg_bin = os.path.abspath(path)
+            break
+            
+    if ffmpeg_bin == "ffmpeg":
+        # Check system PATH
+        system_ffmpeg = shutil.which("ffmpeg")
+        if not system_ffmpeg:
+            raise FileNotFoundError("ffmpeg binary not found on system PATH or local bin/ directory")
+        ffmpeg_bin = system_ffmpeg
+            
+    # Run ffmpeg command to convert WAV to OGG/Opus
+    cmd = [
+        ffmpeg_bin,
+        "-y",               # Overwrite output files
+        "-i", wav_path,     # Input file
+        "-c:a", "libopus",  # Opus audio codec
+        ogg_path            # Output file
+    ]
+    
+    logger.info("Running ffmpeg conversion: %s", " ".join(cmd))
+    
+    # Run subprocess
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+    
+    if result.returncode != 0:
+        logger.error("ffmpeg conversion failed: stdout=%s, stderr=%s", result.stdout, result.stderr)
+        raise RuntimeError(f"ffmpeg returned exit code {result.returncode}")
+        
+    if not os.path.exists(ogg_path) or os.path.getsize(ogg_path) == 0:
+        raise RuntimeError("Output OGG file was not created or is empty")
+        
+    logger.info("Successfully converted WAV to OGG/Opus: %s", ogg_path)
+    return ogg_filename
+

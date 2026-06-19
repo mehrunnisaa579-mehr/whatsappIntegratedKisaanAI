@@ -10,6 +10,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from routers import health, analyze, weather, tts, voice, twilio_whatsapp
+import mimetypes
+mimetypes.add_type("audio/ogg", ".ogg")
 
 app = FastAPI(
     title="FarmAI",

@@ -206,52 +206,82 @@ def test_twilio_webhook_image_flow_and_background_task():
 def test_generate_and_send_tts_summary_background_task():
     print("\nRunning background TTS generation and sending task tests...")
     
-    # 1. Test Successful TTS Generation
+    # 1. Test Successful TTS Generation and Successful OGG Conversion
     with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
+         patch("services.tts_service.convert_wav_to_ogg_opus") as mock_convert_ogg, \
          patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send:
               
          mock_generate_tts.return_value = {
-             "success": True,
-             "filename": "tts_test_file.wav"
-         }
+              "success": True,
+              "filename": "tts_test_file.wav"
+          }
+         mock_convert_ogg.return_value = "tts_test_file.ogg"
          mock_send.return_value = True
          
          import asyncio
          asyncio.run(generate_and_send_tts_summary(
-             to_number="whatsapp:+923001234567",
-             text_to_speak="ٹیسٹ آڈیو خلاصہ",
-             base_url="https://testserver",
-             language_hint="urdu"
-         ))
+              to_number="whatsapp:+923001234567",
+              text_to_speak="ٹیسٹ آڈیو خلاصہ",
+              base_url="https://testserver",
+              language_hint="urdu"
+          ))
          
          mock_generate_tts.assert_called_once_with("ٹیسٹ آڈیو خلاصہ", language_hint="urdu")
+         mock_convert_ogg.assert_called_once_with("tts_test_file.wav")
          mock_send.assert_called_once_with(
-             to_number="whatsapp:+923001234567",
-             media_url="https://testserver/static/audio/tts_test_file.wav"
-         )
-         
-    # 2. Test TTS Generation Failure Fallback
+              to_number="whatsapp:+923001234567",
+              media_url="https://testserver/static/audio/tts_test_file.ogg"
+          )
+          
+    # 2. Test Successful TTS Generation but OGG Conversion Fails (Fallback to WAV)
     with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
+         patch("services.tts_service.convert_wav_to_ogg_opus") as mock_convert_ogg, \
          patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send:
               
          mock_generate_tts.return_value = {
-             "success": False,
-             "message": "API Quota Exceeded"
-         }
+              "success": True,
+              "filename": "tts_test_file.wav"
+          }
+         mock_convert_ogg.side_effect = Exception("ffmpeg failed")
          mock_send.return_value = True
          
          import asyncio
          asyncio.run(generate_and_send_tts_summary(
-             to_number="whatsapp:+923001234567",
-             text_to_speak="ٹیسٹ آڈیو خلاصہ",
-             base_url="https://testserver"
-         ))
+              to_number="whatsapp:+923001234567",
+              text_to_speak="ٹیسٹ آڈیو خلاصہ",
+              base_url="https://testserver",
+              language_hint="urdu"
+          ))
+         
+         mock_generate_tts.assert_called_once_with("ٹیسٹ آڈیو خلاصہ", language_hint="urdu")
+         mock_convert_ogg.assert_called_once_with("tts_test_file.wav")
+         mock_send.assert_called_once_with(
+              to_number="whatsapp:+923001234567",
+              media_url="https://testserver/static/audio/tts_test_file.wav"
+          )
+
+    # 3. Test TTS Generation Failure Fallback
+    with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
+         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send:
+              
+         mock_generate_tts.return_value = {
+              "success": False,
+              "message": "API Quota Exceeded"
+          }
+         mock_send.return_value = True
+         
+         import asyncio
+         asyncio.run(generate_and_send_tts_summary(
+              to_number="whatsapp:+923001234567",
+              text_to_speak="ٹیسٹ آڈیو خلاصہ",
+              base_url="https://testserver"
+          ))
          
          mock_send.assert_called_once_with(
-             to_number="whatsapp:+923001234567",
-             body="Sorry, FarmAI could not generate the audio summary right now."
-         )
-         
+              to_number="whatsapp:+923001234567",
+              body="Sorry, FarmAI could not generate the audio summary right now."
+          )
+          
     print("Background TTS task tests passed successfully!")
 
 def test_tts_standalone_endpoint():
@@ -424,6 +454,7 @@ def test_production_specific_flows():
 
     # 6. Test background task logs audio URL before sending even if Twilio returns 429
     with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
+         patch("services.tts_service.convert_wav_to_ogg_opus") as mock_convert_ogg, \
          patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send, \
          patch("routers.twilio_whatsapp.logger.info") as mock_logger_info:
               
@@ -431,6 +462,7 @@ def test_production_specific_flows():
               "success": True,
               "filename": "tts_test_file.wav"
           }
+         mock_convert_ogg.return_value = "tts_test_file.ogg"
          # Mock Twilio returning False (e.g. failure like 429)
          mock_send.return_value = False
          

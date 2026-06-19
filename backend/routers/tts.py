@@ -14,7 +14,7 @@ class TTSRequest(BaseModel):
     language_hint: Optional[str] = None
 
 @router.post("/tts")
-def text_to_speech(payload: TTSRequest, request: Request):
+async def text_to_speech(payload: TTSRequest, request: Request):
     """
     FastAPI endpoint for standalone text-to-speech conversion.
     

@@ -186,10 +186,20 @@ async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, base
             )
             return
             
-        logger.info("WhatsApp TTS audio generated successfully for audio summary.")
+        logger.info("WhatsApp TTS WAV generated successfully.")
         filename = tts_result["filename"]
         
-        audio_url = f"{base_url}/static/audio/{filename}"
+        # Convert WAV to OGG/Opus
+        from services.tts_service import convert_wav_to_ogg_opus
+        try:
+            ogg_filename = convert_wav_to_ogg_opus(filename)
+            logger.info("WhatsApp TTS audio converted to OGG successfully.")
+            filename_to_send = ogg_filename
+        except Exception as conv_err:
+            logger.exception("Failed to convert WAV to OGG: %s. Falling back to WAV.", str(conv_err))
+            filename_to_send = filename
+            
+        audio_url = f"{base_url}/static/audio/{filename_to_send}"
         logger.info("Generated WhatsApp TTS audio URL: %s", audio_url)
         
         # Send media message via Twilio outbound helper
