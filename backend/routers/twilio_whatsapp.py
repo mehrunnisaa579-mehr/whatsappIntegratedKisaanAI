@@ -73,12 +73,42 @@ async def send_twilio_whatsapp_message(to_number: str, body: str = None, media_u
         logger.error("Failed to send Twilio WhatsApp message/media to %s: %s", to_number, str(e))
         return False
 
+def trim_to_max_chars(text: str, max_chars: int = 1500) -> str:
+    """
+    Trims text to be under max_chars.
+    Attempts to truncate cleanly at a sentence boundary (., ۔, \n) if possible.
+    """
+    if not text or len(text) <= max_chars:
+        return text
+    
+    # Try to find the last sentence boundary in the truncated portion
+    target_len = max_chars - 4 # room for "..." or space
+    truncated = text[:target_len]
+    
+    last_idx = max(truncated.rfind('۔'), truncated.rfind('.'), truncated.rfind('\n'))
+    # Only use sentence boundary if it's not too short (at least 60% of target_len)
+    if last_idx > target_len * 0.6:
+        return truncated[:last_idx + 1].strip()
+    return truncated.strip() + "..."
+
+def get_base_url(request: Request) -> str:
+    public_base_url = os.environ.get("PUBLIC_BASE_URL")
+    if public_base_url:
+        return public_base_url.rstrip('/')
+    base_url = str(request.base_url).rstrip('/')
+    if not any(lh in base_url for lh in ("localhost", "127.0.0.1", "0.0.0.0")):
+        if base_url.startswith("http://"):
+            base_url = "https://" + base_url[7:]
+    return base_url
+
 def sanitize_text_for_tts(text: str, language_hint: str = None) -> str:
     """
     Cleans headings, removes markdown, bullets, emojis, XML/TwiML, URLs,
     excessive punctuation, colons, and weird symbols.
-    Limits text length to ~550 characters for English and ~280 characters
-    for Roman Urdu/Urdu script to prevent safety/modality generation errors.
+    Limits text length depending on language:
+      - English: max 550 chars
+      - Roman Urdu: max 280 chars
+      - Urdu script: max 280 chars
     """
     if not text:
         return ""
@@ -89,58 +119,49 @@ def sanitize_text_for_tts(text: str, language_hint: str = None) -> str:
     # 2. Remove URLs
     text = re.sub(r'https?://\S+|www\.\S+', '', text)
     
-    # 3. Strip headings (with or without colons/spaces)
-    headings_pattern = re.compile(
-        r"(?i)\b(possible issue|risk level|recommended action|weather note|next step|mumkin masla|khatray ki satah|khatre ki satah|tajweez kardah amal|mosam ka khayal|agla qadam)\b\s*[:،,\-\s]*|"
-        r"(ممکنہ مسئلہ|خطرے کی سطح|تجویز کردہ عمل|موسم کا خیال|اگلا قدم)\s*[:،\-\s]*"
-    )
-    text = headings_pattern.sub("", text)
-    
-    # 4. Remove forbidden phrases/instructions
-    forbidden_pattern = re.compile(
-        r"(?i)\b(summarize this|read this|create audio summary|explain this|make a summary|generate response|headings analysis|markdown instructions)\b\s*"
-    )
-    text = forbidden_pattern.sub("", text)
-    
-    # 5. Replace colons (:) and dashes with spaces/commas for natural pause
+    # 3. Replace colons (:) and dashes with spaces/commas for natural pause
     text = text.replace(":", ", ").replace("—", " ").replace("-", " ")
     
-    # 6. Remove emojis and weird symbols (allow letters, numbers, spaces, standard English and Urdu punctuation)
+    # 4. Remove emojis and weird symbols (allow letters, numbers, spaces, standard English and Urdu punctuation)
     text = re.sub(r'[^\w\s\.,\?!\(\)۔\u0600-\u06FF]', '', text)
     
-    # 7. Remove markdown symbols
+    # 5. Remove markdown symbols
     text = text.replace("**", "").replace("*", "").replace("__", "").replace("_", "")
     
-    # 8. Remove list bullets and numbers at the start of lines or within text
+    # 6. Remove list bullets and numbers at the start of lines or within text
     text = re.sub(r'^\s*[-*+•]\s*', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\s*\d+[\s\.)\-]*', '', text, flags=re.MULTILINE)
     
-    # 9. Normalize spaces and newlines
+    # 7. Normalize spaces and newlines
     text = re.sub(r'\s+', ' ', text).strip()
     
-    # 10. Limit length based on language script to prevent OTHER finish reason in TTS
-    has_urdu = any("\u0600" <= ch <= "\u06FF" for ch in text)
-    is_english = (language_hint == "english")
-    if not language_hint:
-        # Fallback detection
+    # 8. Determine language-specific limit
+    lang = language_hint
+    if not lang:
         from utils.helpers import detect_language
-        detected = detect_language(text)
-        is_english = (detected == "english") and not has_urdu
-
-    limit = 550 if is_english else 280
+        lang = detect_language(text)
     
-    if len(text) > limit:
-        truncated = text[:limit]
+    lang_lower = str(lang).lower().strip()
+    if lang_lower in ("ur", "urdu"):
+        max_limit = 280
+    elif lang_lower == "roman_urdu":
+        max_limit = 280
+    else:
+        max_limit = 550
+        
+    # Limit length
+    if len(text) > max_limit:
+        truncated = text[:max_limit]
         # Attempt to cut at a sentence ending (either English period or Urdu full stop)
         last_period = max(truncated.rfind('.'), truncated.rfind('۔'))
-        if last_period > (limit - 100):
+        if last_period > max_limit // 2:
             text = truncated[:last_period + 1]
         else:
             text = truncated + "..."
             
     return text.strip()
 
-async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, request: Request, language_hint: str = None):
+async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, base_url: str, language_hint: str = None):
     """
     Background task to generate TTS audio and send it as a WhatsApp media message.
     """
@@ -148,24 +169,11 @@ async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, requ
         masked_number = to_number[:9] + "..." if to_number else "None"
         logger.info("Background task: generating TTS audio for %s (language_hint=%s)", masked_number, language_hint)
         
-        # Determine transcript type (English, Roman Urdu, Urdu Script)
-        has_urdu_chars = any("\u0600" <= ch <= "\u06FF" for ch in text_to_speak)
-        if has_urdu_chars:
-            transcript_type = "Urdu script"
-        elif language_hint == "roman_urdu":
-            transcript_type = "Roman Urdu"
-        elif language_hint == "english":
-            transcript_type = "English"
-        else:
-            # Fallback detection
-            from utils.helpers import detect_language
-            detected_lang = detect_language(text_to_speak)
-            transcript_type = "Urdu script" if detected_lang == "urdu" else ("Roman Urdu" if detected_lang == "roman_urdu" else "English")
-            
-        logger.info("Detected language hint: %s", language_hint)
-        logger.info("Final TTS transcript length: %d", len(text_to_speak))
-        logger.info("First 150 characters of final transcript: %s", text_to_speak[:150])
-        logger.info("Transcript type: %s", transcript_type)
+        # Safe debug logs: log length and first 120 characters snippet only
+        summary_len = len(text_to_speak) if text_to_speak else 0
+        safe_snippet = text_to_speak[:120] if text_to_speak else ""
+        logger.info("Sanitized TTS Summary Length: %d characters", summary_len)
+        logger.info("Sanitized TTS Summary Snippet (first 120 chars): %s", safe_snippet)
         
         # Generate audio using existing tts_service
         tts_result = generate_tts_audio(text_to_speak, language_hint=language_hint)
@@ -181,17 +189,6 @@ async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, requ
         logger.info("WhatsApp TTS audio generated successfully for audio summary.")
         filename = tts_result["filename"]
         
-        # Build public absolute media URL
-        public_base_url = os.environ.get("PUBLIC_BASE_URL")
-        if public_base_url:
-            base_url = public_base_url.rstrip('/')
-        else:
-            base_url = str(request.base_url).rstrip('/')
-            # Force HTTPS on non-localhost for Twilio production compatibility
-            if not any(lh in base_url for lh in ("localhost", "127.0.0.1", "0.0.0.0")):
-                if base_url.startswith("http://"):
-                    base_url = "https://" + base_url[7:]
-                    
         audio_url = f"{base_url}/static/audio/{filename}"
         logger.info("Generated WhatsApp TTS audio URL: %s", audio_url)
         
@@ -292,6 +289,10 @@ async def analyze_image_in_background(
         if not tts_summary:
             tts_summary = generate_safe_tts_summary(farmer_response, lang_hint)
             
+        # Trim response before appending the prompt
+        prompt = "\n\nDo you want an audio summary of this diagnosis? Reply yes or no."
+        farmer_response = trim_to_max_chars(farmer_response, 1500 - len(prompt))
+            
         # Save to state-machine
         conversation_states[from_number] = {
             "last_response_text": farmer_response,
@@ -302,7 +303,7 @@ async def analyze_image_in_background(
         }
         
         # Send diagnosis and prompt
-        full_text = farmer_response + "\n\nDo you want an audio summary of this diagnosis? Reply yes or no."
+        full_text = farmer_response + prompt
         await send_twilio_whatsapp_message(
             to_number=from_number,
             body=full_text
@@ -349,14 +350,17 @@ async def twilio_whatsapp_webhook(
                 conversation_states.pop(From, None)
                 user_state = None
                 
+        # Prep yes/no values
+        clean_reply = body_text.lower().strip().rstrip('.')
+        yes_values = {"yes", "y", "1", "haan", "han", "audio"}
+        no_values = {"no", "n", "0", "nah", "nahi"}
+        
+        is_yes_word = clean_reply in yes_values
+        is_no_word = clean_reply in no_values
+
         # 3. Handle yes/no confirmation responses if pending
         if user_state and user_state.get("pending_tts_confirmation"):
-            clean_reply = body_text.lower().strip().rstrip('.')
-            
-            yes_values = {"yes", "y", "1", "haan", "han", "audio"}
-            no_values = {"no", "n", "0", "nah", "nahi"}
-            
-            if clean_reply in yes_values:
+            if is_yes_word:
                 # Clear pending confirmation flag
                 user_state["pending_tts_confirmation"] = False
                 user_state["updated_at"] = time.time()
@@ -371,29 +375,24 @@ async def twilio_whatsapp_webhook(
                     lang_hint = detect_language(user_state.get("last_response_text"))
                 
                 text_to_speak = user_state.get("tts_summary")
-                if not text_to_speak or len(text_to_speak.strip()) < 30:
+                if not text_to_speak:
                     text_to_speak = generate_safe_tts_summary(user_state.get("last_response_text"), lang_hint)
                 
                 # Sanitize the summary text for TTS engine
-                text_to_speak = sanitize_text_for_tts(text_to_speak, lang_hint)
+                text_to_speak = sanitize_text_for_tts(text_to_speak, language_hint=lang_hint)
                 
-                # Fallback if sanitization left it empty or too short
-                if len(text_to_speak.strip()) < 30:
-                    logger.warning("Sanitized text is too short. Applying sentence fallback from detailed response.")
-                    raw_text = user_state.get("last_response_text", "")
-                    from services.gemini_service import clean_and_shorten_section
-                    text_to_speak = clean_and_shorten_section(raw_text, 3)
-                    text_to_speak = sanitize_text_for_tts(text_to_speak, lang_hint)
+                # Compute base URL dynamically
+                base_url = get_base_url(request)
                 
                 # Spawn TTS generation and send in background
                 background_tasks.add_task(
                     generate_and_send_tts_summary,
                     to_number=From,
                     text_to_speak=text_to_speak,
-                    request=request,
+                    base_url=base_url,
                     language_hint=lang_hint
                 )
-            elif clean_reply in no_values:
+            elif is_no_word:
                 # Remove conversation state completely
                 conversation_states.pop(From, None)
                 farmer_response = "Okay, no audio summary will be sent."
@@ -403,6 +402,25 @@ async def twilio_whatsapp_webhook(
                 farmer_response = "Please reply yes or no for the audio summary."
                 
             # Return response
+            farmer_response = trim_to_max_chars(farmer_response, 1500)
+            escaped_response = saxutils.escape(farmer_response)
+            twiml_response = (
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<Response>\n'
+                f'    <Message>{escaped_response}</Message>\n'
+                '</Response>'
+            )
+            return Response(content=twiml_response, media_type="application/xml")
+            
+        elif is_yes_word or is_no_word:
+            # Handle yes/no words when there is no pending confirmation state
+            if is_yes_word:
+                farmer_response = "No pending audio summary found. Please ask a farming question first."
+            else:
+                conversation_states.pop(From, None)
+                farmer_response = "Okay, no audio summary will be sent."
+                
+            farmer_response = trim_to_max_chars(farmer_response, 1500)
             escaped_response = saxutils.escape(farmer_response)
             twiml_response = (
                 '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -437,6 +455,10 @@ async def twilio_whatsapp_webhook(
                         if not tts_summary:
                             tts_summary = generate_safe_tts_summary(farmer_response, lang_hint)
                             
+                        # Trim response before saving state and appending prompt
+                        prompt = "\n\nDo you want an audio summary of this advice? Reply yes or no."
+                        farmer_response = trim_to_max_chars(farmer_response, 1500 - len(prompt))
+                            
                         # Save state
                         conversation_states[From] = {
                             "last_response_text": farmer_response,
@@ -447,7 +469,7 @@ async def twilio_whatsapp_webhook(
                         }
                         
                         # Append the audio summary prompt
-                        farmer_response += "\n\nDo you want an audio summary of this advice? Reply yes or no."
+                        farmer_response += prompt
                         
                 except Exception as e:
                     logger.error("Error processing text message: %s", str(e))
@@ -468,6 +490,7 @@ async def twilio_whatsapp_webhook(
             farmer_response = "FarmAI received your crop image. Analyzing it now..."
 
         # Escape XML characters to prevent TwiML formatting issues
+        farmer_response = trim_to_max_chars(farmer_response, 1500)
         escaped_response = saxutils.escape(farmer_response)
         
         twiml_response = (
@@ -481,6 +504,7 @@ async def twilio_whatsapp_webhook(
     except Exception as webhook_err:
         logger.error("Unexpected error in twilio_whatsapp_webhook: %s", str(webhook_err))
         fallback_msg = "Sorry, FarmAI could not process this request right now. Please try again."
+        fallback_msg = trim_to_max_chars(fallback_msg, 1500)
         escaped_fallback = saxutils.escape(fallback_msg)
         twiml_response = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'

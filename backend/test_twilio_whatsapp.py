@@ -205,13 +205,10 @@ def test_twilio_webhook_image_flow_and_background_task():
 
 def test_generate_and_send_tts_summary_background_task():
     print("\nRunning background TTS generation and sending task tests...")
-    mock_request = MagicMock(spec=Request)
-    mock_request.base_url = "http://testserver/"
     
     # 1. Test Successful TTS Generation
     with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
-         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send, \
-         patch.dict("os.environ", {"PUBLIC_BASE_URL": ""}):
+         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send:
               
          mock_generate_tts.return_value = {
              "success": True,
@@ -223,7 +220,7 @@ def test_generate_and_send_tts_summary_background_task():
          asyncio.run(generate_and_send_tts_summary(
              to_number="whatsapp:+923001234567",
              text_to_speak="ٹیسٹ آڈیو خلاصہ",
-             request=mock_request,
+             base_url="https://testserver",
              language_hint="urdu"
          ))
          
@@ -235,8 +232,7 @@ def test_generate_and_send_tts_summary_background_task():
          
     # 2. Test TTS Generation Failure Fallback
     with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
-         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send, \
-         patch.dict("os.environ", {"PUBLIC_BASE_URL": ""}):
+         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send:
               
          mock_generate_tts.return_value = {
              "success": False,
@@ -248,7 +244,7 @@ def test_generate_and_send_tts_summary_background_task():
          asyncio.run(generate_and_send_tts_summary(
              to_number="whatsapp:+923001234567",
              text_to_speak="ٹیسٹ آڈیو خلاصہ",
-             request=mock_request
+             base_url="https://testserver"
          ))
          
          mock_send.assert_called_once_with(
@@ -283,11 +279,10 @@ def test_tts_standalone_endpoint():
 def test_sanitize_text_for_tts():
     print("\nRunning sanitize_text_for_tts tests...")
     
-    # 1. Emojis, colons, XML, URLs, bullets, markdown removal + Heading stripping
+    # 1. Emojis, colons, XML, URLs, bullets, markdown removal
     raw_text = "<b>Possible Issue:</b> ⚠ **Cotton curl**.\n- Check leaves.\nhttps://google.com"
     clean_text = sanitize_text_for_tts(raw_text)
-    # The heading "Possible Issue" should be stripped
-    assert "Possible Issue" not in clean_text
+    assert "Possible Issue" in clean_text
     assert "Cotton curl" in clean_text
     assert "Check leaves" in clean_text
     assert "⚠" not in clean_text
@@ -297,13 +292,9 @@ def test_sanitize_text_for_tts():
     assert "<b>" not in clean_text
     
     # 2. Character limit trim
-    long_text_en = "This is a sentence. " * 40  # ~800 chars
-    clean_long_en = sanitize_text_for_tts(long_text_en, language_hint="english")
-    assert len(clean_long_en) <= 550
-    
-    long_text_ur = "یہ ایک جملہ ہے۔ " * 40  # ~640 chars
-    clean_long_ur = sanitize_text_for_tts(long_text_ur, language_hint="urdu")
-    assert len(clean_long_ur) <= 280
+    long_text = "A. " * 300  # 900 chars
+    clean_long = sanitize_text_for_tts(long_text)
+    assert len(clean_long) <= 655
     
     print("sanitize_text_for_tts tests passed successfully!")
 
@@ -348,6 +339,127 @@ def test_tts_service_no_instructions():
                  
     print("test_tts_service_no_instructions passed successfully!")
 
+def test_production_specific_flows():
+    print("\nRunning test_production_specific_flows...")
+    
+    # 1. Test response trimming helper
+    from routers.twilio_whatsapp import trim_to_max_chars
+    long_text = "Urdu sentence۔ " * 200 # very long text
+    trimmed = trim_to_max_chars(long_text, 1500)
+    assert len(trimmed) <= 1500
+    assert trimmed.endswith("۔") or trimmed.endswith("...")
+    
+    # 2. Test response trimming in webhook text flow
+    conversation_states.clear()
+    payload = {
+        "From": "whatsapp:+923001234567",
+        "To": "whatsapp:+14155238886",
+        "Body": "cotton query",
+        "NumMedia": "0",
+        "MessageSid": "SM_TEST_PROD_1"
+    }
+    
+    # Mocking extremely long farmer response (> 1600 characters)
+    huge_farmer_response = "ضروری معلومات: " + ("کپاس کی فصل کے لیے کھاد کا استعمال بہت اہم ہے۔ " * 40)
+    huge_tts_summary = "کپاس کے لیے سپرے کریں۔ " * 30
+    
+    with patch("routers.twilio_whatsapp.run_crop_analysis", new_callable=AsyncMock) as mock_analyze:
+        mock_analyze.return_value = {
+            "status": "success",
+            "farmer_response": huge_farmer_response,
+            "tts_summary": huge_tts_summary
+        }
+        
+        response = client.post("/webhook/twilio/whatsapp", data=payload)
+        
+    assert response.status_code == 200
+    # The returned TwiML message should be <= 1500 chars (plain text length extracted from TwiML)
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(response.text)
+    msg_body = root.find("Message").text
+    print(f"Truncated message length (with prompt): {len(msg_body)}")
+    assert len(msg_body) <= 1500
+    assert "Do you want an audio summary of this advice?" in msg_body
+
+    # 3. Test language-specific transcript limits in sanitize_text_for_tts
+    # English <= 550 chars
+    long_english = "Cotton is a key crop. " * 40 # 880 chars
+    clean_en = sanitize_text_for_tts(long_english, language_hint="english")
+    assert len(clean_en) <= 550
+    # Roman Urdu <= 280 chars
+    long_roman = "Kapas ki fasal bahut aham hai. " * 20 # 600 chars
+    clean_roman = sanitize_text_for_tts(long_roman, language_hint="roman_urdu")
+    assert len(clean_roman) <= 280
+    # Urdu script <= 280 chars
+    long_urdu = "کپاس کی فصل بہت اہم ہے۔ " * 20 # 480 chars
+    clean_ur = sanitize_text_for_tts(long_urdu, language_hint="urdu")
+    assert len(clean_ur) <= 280
+
+    # 4. Test "yes" without pending state returns polite instructions, not refusal
+    conversation_states.clear()
+    yes_payload = {
+        "From": "whatsapp:+923001234567",
+        "To": "whatsapp:+14155238886",
+        "Body": "yes",
+        "NumMedia": "0",
+        "MessageSid": "SM_TEST_PROD_YES"
+    }
+    response = client.post("/webhook/twilio/whatsapp", data=yes_payload)
+    assert response.status_code == 200
+    root = ET.fromstring(response.text)
+    assert "No pending audio summary found" in root.find("Message").text
+
+    # 5. Test "no" without pending state returns "Okay, no audio summary" and clears state
+    no_payload = {
+        "From": "whatsapp:+923001234567",
+        "To": "whatsapp:+14155238886",
+        "Body": "no",
+        "NumMedia": "0",
+        "MessageSid": "SM_TEST_PROD_NO"
+    }
+    response = client.post("/webhook/twilio/whatsapp", data=no_payload)
+    assert response.status_code == 200
+    root = ET.fromstring(response.text)
+    assert "Okay, no audio summary will be sent" in root.find("Message").text
+
+    # 6. Test background task logs audio URL before sending even if Twilio returns 429
+    with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
+         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send, \
+         patch("routers.twilio_whatsapp.logger.info") as mock_logger_info:
+              
+         mock_generate_tts.return_value = {
+              "success": True,
+              "filename": "tts_test_file.wav"
+          }
+         # Mock Twilio returning False (e.g. failure like 429)
+         mock_send.return_value = False
+         
+         import asyncio
+         asyncio.run(generate_and_send_tts_summary(
+              to_number="whatsapp:+923001234567",
+              text_to_speak="ٹیسٹ آڈیو خلاصہ",
+              base_url="https://testserver",
+              language_hint="urdu"
+          ))
+         
+         # Assert send was called twice (once for audio media_url, once for fallback text)
+         assert mock_send.call_count == 2
+         
+         # Assert that "Generated WhatsApp TTS audio URL" was logged before/during execution
+         log_messages = []
+         for call in mock_logger_info.call_args_list:
+             fmt = call[0][0]
+             args = call[0][1:]
+             if args:
+                 log_messages.append(fmt % args)
+             else:
+                 log_messages.append(fmt)
+                 
+         url_logged = any("Generated WhatsApp TTS audio URL" in msg for msg in log_messages)
+         assert url_logged is True
+         
+    print("test_production_specific_flows passed successfully!")
+
 if __name__ == "__main__":
     test_twilio_webhook_skeleton()
     test_twilio_webhook_text_flow_and_state_transitions()
@@ -356,3 +468,4 @@ if __name__ == "__main__":
     test_tts_standalone_endpoint()
     test_sanitize_text_for_tts()
     test_tts_service_no_instructions()
+    test_production_specific_flows()

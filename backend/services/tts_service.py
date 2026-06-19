@@ -91,9 +91,25 @@ def generate_tts_audio(text: str, language_hint: str = None) -> dict:
     if len(cleaned_text) > 2000:
         cleaned_text = cleaned_text[:2000] + "..."
 
-    # Safe debug logs
+    # Detect language for logging and prompt
+    active_lang = language_hint
+    if not active_lang:
+        from utils.helpers import detect_language
+        active_lang = detect_language(cleaned_text)
+
+    lang_lower = str(active_lang).lower().strip()
+    if lang_lower in ("ur", "urdu"):
+        transcript_type = "Urdu script"
+    elif lang_lower == "roman_urdu":
+        transcript_type = "Roman Urdu"
+    else:
+        transcript_type = "English"
+
+    # Safe debug logs before TTS call
+    logger.info("Detected language hint: %s", active_lang)
+    logger.info("Final TTS transcript type: %s", transcript_type)
     logger.info("Final TTS transcript length: %d", len(cleaned_text))
-    logger.info("Final TTS transcript snippet: %s", cleaned_text[:120])
+    logger.info("First 150 characters of transcript: %s", cleaned_text[:150])
 
     from services.key_manager import run_with_key_rotation
 
@@ -153,12 +169,6 @@ def generate_tts_audio(text: str, language_hint: str = None) -> dict:
             }
 
         # 2. Build instructions prompt based on language_hint or detected language
-        active_lang = language_hint
-        if not active_lang:
-            # Infer language from text
-            from utils.helpers import detect_language
-            active_lang = detect_language(cleaned_text)
-
         full_prompt = f"Read this text aloud clearly in a natural farmer-friendly voice: {cleaned_text}"
 
         # 3. Call API
