@@ -44,14 +44,51 @@ async def send_twilio_whatsapp_message(to_number: str, body: str = None, media_u
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
     from_number = os.environ.get("TWILIO_WHATSAPP_FROM")
     
+    # Env var validation logs (safe, no secrets printed)
+    sid_exists = bool(account_sid)
+    token_exists = bool(auth_token)
+    from_starts_correct = from_number.startswith("whatsapp:+") if from_number else False
+    from_len = len(from_number) if from_number else 0
+    logger.info(
+        "Twilio env validation: Account SID exists: %s, Auth Token exists: %s, "
+        "From starts with 'whatsapp:+': %s, length: %d",
+        sid_exists, token_exists, from_starts_correct, from_len
+    )
+    
     if not account_sid or not auth_token or not from_number:
         logger.error("Twilio credentials or TWILIO_WHATSAPP_FROM not set in environment.")
         return False
         
+    # Auto-format sender and recipient
+    formatted_to = to_number.strip() if to_number else ""
+    if formatted_to and not formatted_to.startswith("whatsapp:"):
+        if formatted_to.startswith("+"):
+            formatted_to = f"whatsapp:{formatted_to}"
+        else:
+            formatted_to = f"whatsapp:+{formatted_to}"
+    elif formatted_to and formatted_to.startswith("whatsapp:") and not formatted_to.startswith("whatsapp:+"):
+        number_part = formatted_to[9:]
+        formatted_to = f"whatsapp:+{number_part}"
+        
+    formatted_from = from_number.strip()
+    if formatted_from and not formatted_from.startswith("whatsapp:"):
+        if formatted_from.startswith("+"):
+            formatted_from = f"whatsapp:{formatted_from}"
+        else:
+            formatted_from = f"whatsapp:+{formatted_from}"
+    elif formatted_from and formatted_from.startswith("whatsapp:") and not formatted_from.startswith("whatsapp:+"):
+        number_part = formatted_from[9:]
+        formatted_from = f"whatsapp:+{number_part}"
+        
+    masked_to = formatted_to[:12] + "..." if formatted_to else "None"
+    masked_from = formatted_from[:12] + "..." if formatted_from else "None"
+    
+    logger.info("Outbound message mapping: From=%s, To=%s", masked_from, masked_to)
+    
     url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
     data = {
-        "From": from_number,
-        "To": to_number,
+        "From": formatted_from,
+        "To": formatted_to,
     }
     if body:
         data["Body"] = body
@@ -66,11 +103,20 @@ async def send_twilio_whatsapp_message(to_number: str, body: str = None, media_u
                 data=data,
                 timeout=15.0
             )
+            if response.status_code >= 400:
+                logger.error(
+                    "Twilio API error sending message to %s: HTTP Status Code: %d, Response Body: %s",
+                    masked_to,
+                    response.status_code,
+                    response.text
+                )
+                return False
+                
             response.raise_for_status()
-            logger.info("Sent Twilio WhatsApp message/media to %s: %s", to_number, response.json().get("sid"))
+            logger.info("Sent Twilio WhatsApp message/media to %s: %s", masked_to, response.json().get("sid"))
             return True
     except Exception as e:
-        logger.error("Failed to send Twilio WhatsApp message/media to %s: %s", to_number, str(e))
+        logger.error("Failed to send Twilio WhatsApp message/media to %s: %s", masked_to, str(e))
         return False
 
 def trim_to_max_chars(text: str, max_chars: int = 1500) -> str:
@@ -106,9 +152,9 @@ def sanitize_text_for_tts(text: str, language_hint: str = None) -> str:
     Cleans headings, removes markdown, bullets, emojis, XML/TwiML, URLs,
     excessive punctuation, colons, and weird symbols.
     Limits text length depending on language:
-      - English: max 550 chars
-      - Roman Urdu: max 280 chars
-      - Urdu script: max 280 chars
+      - English: max 1200 chars
+      - Roman Urdu: max 1000 chars
+      - Urdu script: max 1000 chars
     """
     if not text:
         return ""
@@ -143,11 +189,11 @@ def sanitize_text_for_tts(text: str, language_hint: str = None) -> str:
     
     lang_lower = str(lang).lower().strip()
     if lang_lower in ("ur", "urdu"):
-        max_limit = 280
+        max_limit = 1000
     elif lang_lower == "roman_urdu":
-        max_limit = 280
+        max_limit = 1000
     else:
-        max_limit = 550
+        max_limit = 1200
         
     # Limit length
     if len(text) > max_limit:

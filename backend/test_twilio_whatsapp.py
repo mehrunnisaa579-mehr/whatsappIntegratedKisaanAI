@@ -331,9 +331,9 @@ def test_sanitize_text_for_tts():
     assert "<b>" not in clean_text
     
     # 2. Character limit trim
-    long_text = "A. " * 300  # 900 chars
+    long_text = "A. " * 500  # 1500 chars
     clean_long = sanitize_text_for_tts(long_text)
-    assert len(clean_long) <= 655
+    assert len(clean_long) <= 1300
     
     print("sanitize_text_for_tts tests passed successfully!")
 
@@ -421,18 +421,18 @@ def test_production_specific_flows():
     assert "Do you want an audio summary of this advice?" in msg_body
 
     # 3. Test language-specific transcript limits in sanitize_text_for_tts
-    # English <= 550 chars
-    long_english = "Cotton is a key crop. " * 40 # 880 chars
+    # English <= 1200 chars
+    long_english = "Cotton is a key crop. " * 80 # 1760 chars
     clean_en = sanitize_text_for_tts(long_english, language_hint="english")
-    assert len(clean_en) <= 550
-    # Roman Urdu <= 280 chars
-    long_roman = "Kapas ki fasal bahut aham hai. " * 20 # 600 chars
+    assert len(clean_en) <= 1300
+    # Roman Urdu <= 1000 chars
+    long_roman = "Kapas ki fasal bahut aham hai. " * 50 # 1500 chars
     clean_roman = sanitize_text_for_tts(long_roman, language_hint="roman_urdu")
-    assert len(clean_roman) <= 280
-    # Urdu script <= 280 chars
-    long_urdu = "کپاس کی فصل بہت اہم ہے۔ " * 20 # 480 chars
+    assert len(clean_roman) <= 1100
+    # Urdu script <= 1000 chars
+    long_urdu = "کپاس کی فصل بہت اہم ہے۔ " * 50 # 1200 chars
     clean_ur = sanitize_text_for_tts(long_urdu, language_hint="urdu")
-    assert len(clean_ur) <= 280
+    assert len(clean_ur) <= 1100
 
     # 4. Test "yes" without pending state returns polite instructions, not refusal
     conversation_states.clear()

@@ -73,7 +73,85 @@ def pcm_to_wav(pcm_data: bytes, sample_rate: int = 24000) -> bytes:
     return wav_io.getvalue()
 
 
-def generate_tts_audio(text: str, language_hint: str = None) -> dict:
+def get_audio_duration(file_path: str) -> float:
+    """
+    Returns duration of WAV or OGG file in seconds.
+    First tries ffprobe if available.
+    For WAV files, falls back to standard 'wave' module.
+    """
+    import subprocess
+    import shutil
+    
+    # Try ffprobe first
+    ffprobe_bin = "ffprobe"
+    local_paths = [
+        "./bin/ffprobe",
+        "../bin/ffprobe",
+        "./backend/bin/ffprobe",
+        "/opt/render/project/src/backend/bin/ffprobe"
+    ]
+    for path in local_paths:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            ffprobe_bin = os.path.abspath(path)
+            break
+            
+    system_ffprobe = shutil.which("ffprobe")
+    if system_ffprobe:
+        ffprobe_bin = system_ffprobe
+        
+    try:
+        cmd = [
+            ffprobe_bin,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        if result.returncode == 0:
+            val = result.stdout.strip()
+            if val:
+                return float(val)
+    except Exception as e:
+        logger.warning("ffprobe duration query failed for %s: %s", file_path, str(e))
+        
+    # Fallback for WAV file using 'wave' module
+    if file_path.lower().endswith(".wav"):
+        try:
+            with wave.open(file_path, 'r') as w:
+                frames = w.getnframes()
+                rate = w.getframerate()
+                if rate > 0:
+                    return frames / float(rate)
+        except Exception as e:
+            logger.error("wave module duration fallback failed: %s", str(e))
+            
+    return 0.0
+
+
+def get_shorter_transcript(text: str) -> str:
+    """
+    Splits text into sentences and takes only first 60% of sentences to form a shorter transcript.
+    """
+    sentences = re.split(r'([۔\.\n!\?])', text)
+    paired_sentences = []
+    current_sent = ""
+    for token in sentences:
+        if token in ("۔", ".", "\n", "!", "?"):
+            current_sent += token
+            paired_sentences.append(current_sent)
+            current_sent = ""
+        else:
+            current_sent += token
+    if current_sent.strip():
+        paired_sentences.append(current_sent)
+        
+    num_to_keep = max(1, int(len(paired_sentences) * 0.6))
+    shortened = "".join(paired_sentences[:num_to_keep]).strip()
+    return shortened
+
+
+def generate_tts_audio(text: str, language_hint: str = None, is_retry: bool = False) -> dict:
     """
     Generates TTS audio from input text using Gemini API.
     Saves file under static/audio/ and returns a status dict.
@@ -244,6 +322,32 @@ def generate_tts_audio(text: str, language_hint: str = None) -> dict:
         res["tts_status"]["pool"] = rotation_res.get("pool")
         res["tts_status"]["attempts"] = rotation_res.get("attempts")
         res["tts_status"]["key_index_used"] = rotation_res.get("key_index_used")
+        
+        # Verify duration
+        filename = res["filename"]
+        file_path = os.path.join(STATIC_AUDIO_DIR, filename)
+        duration = 0.0
+        file_size = 0
+        if os.path.exists(file_path):
+            duration = get_audio_duration(file_path)
+            file_size = os.path.getsize(file_path)
+        logger.info("Generated WAV filename: %s, size: %d bytes, duration: %.2fs", filename, file_size, duration)
+        
+        # Check if duration is too short for transcript length (e.g. N / 25)
+        min_expected = len(cleaned_text) / 25.0
+        if not is_retry and len(cleaned_text) >= 50 and 0.0 < duration < min_expected:
+            logger.warning("Generated audio appears too short for transcript length (expected >= %.2fs, got %.2fs). Retrying once with a shorter transcript...", min_expected, duration)
+            shorter_text = get_shorter_transcript(cleaned_text)
+            logger.info("Shortened transcript length: %d characters, snippet: %s", len(shorter_text), shorter_text[:150])
+            
+            # Recursive call with shortened text and is_retry=True
+            retry_res = generate_tts_audio(shorter_text, language_hint=language_hint, is_retry=True)
+            if retry_res.get("success"):
+                logger.info("Retried TTS generation successfully.")
+                return retry_res
+            else:
+                logger.warning("Retried TTS generation failed: %s. Using original cut-off audio as fallback.", retry_res.get("message"))
+                
         return res
     else:
         # Rotation failed completely (all keys exhausted or pool empty)
@@ -259,6 +363,7 @@ def generate_tts_audio(text: str, language_hint: str = None) -> dict:
                 "key_index_used": rotation_res.get("key_index_used", 0)
             }
         }
+
 
 def convert_wav_to_ogg_opus(wav_filename: str) -> str:
     """
@@ -305,12 +410,15 @@ def convert_wav_to_ogg_opus(wav_filename: str) -> str:
             raise FileNotFoundError("ffmpeg binary not found on system PATH or local bin/ directory")
         ffmpeg_bin = system_ffmpeg
             
-    # Run ffmpeg command to convert WAV to OGG/Opus
+    # Run ffmpeg command to convert WAV to OGG/Opus with optimized settings for voice messages
     cmd = [
         ffmpeg_bin,
         "-y",               # Overwrite output files
         "-i", wav_path,     # Input file
         "-c:a", "libopus",  # Opus audio codec
+        "-b:a", "24k",      # 24k bitrate
+        "-ar", "48000",     # 48000 Hz sample rate
+        "-ac", "1",         # Mono channel
         ogg_path            # Output file
     ]
     
@@ -323,9 +431,19 @@ def convert_wav_to_ogg_opus(wav_filename: str) -> str:
         logger.error("ffmpeg conversion failed: stdout=%s, stderr=%s", result.stdout, result.stderr)
         raise RuntimeError(f"ffmpeg returned exit code {result.returncode}")
         
-    if not os.path.exists(ogg_path) or os.path.getsize(ogg_path) == 0:
+    ogg_size = os.path.getsize(ogg_path)
+    if not os.path.exists(ogg_path) or ogg_size == 0:
         raise RuntimeError("Output OGG file was not created or is empty")
         
+    ogg_duration = get_audio_duration(ogg_path)
+    wav_duration = get_audio_duration(wav_path)
+    
     logger.info("Successfully converted WAV to OGG/Opus: %s", ogg_path)
+    logger.info("Generated OGG filename: %s, size: %d bytes, duration: %.2fs", ogg_filename, ogg_size, ogg_duration)
+    logger.info("WAV duration: %.2fs vs OGG duration: %.2fs", wav_duration, ogg_duration)
+    
+    if abs(wav_duration - ogg_duration) > 2.0:
+        logger.warning("OGG file duration (%.2fs) differs significantly from WAV duration (%.2fs)", ogg_duration, wav_duration)
+        
     return ogg_filename
 
