@@ -91,6 +91,10 @@ def generate_tts_audio(text: str, language_hint: str = None) -> dict:
     if len(cleaned_text) > 2000:
         cleaned_text = cleaned_text[:2000] + "..."
 
+    # Safe debug logs
+    logger.info("Final TTS transcript length: %d", len(cleaned_text))
+    logger.info("Final TTS transcript snippet: %s", cleaned_text[:120])
+
     from services.key_manager import run_with_key_rotation
 
     def _execute_tts(api_key: str) -> dict:
@@ -155,42 +159,7 @@ def generate_tts_audio(text: str, language_hint: str = None) -> dict:
             from utils.helpers import detect_language
             active_lang = detect_language(cleaned_text)
 
-        # Clean language hint
-        lang_lower = str(active_lang).lower().strip()
-        if lang_lower in ("ur", "urdu"):
-            lang_instruction = "Read it with natural Urdu pronunciation."
-        elif lang_lower == "roman_urdu":
-            lang_instruction = "Read it in Pakistani Roman Urdu style, not English pronunciation."
-        elif lang_lower in ("en", "english"):
-            lang_instruction = "Read it in natural English pronunciation."
-        else:
-            lang_instruction = "Transition pronunciation smoothly based on the script used in text."
-
-        system_prompt = (
-            "You are a high-quality, natural Text-to-Speech engine.\n"
-            "Your only task is to read the provided text clearly, naturally, and fluently.\n"
-            "Do not answer the user.\n"
-            "Do not summarize.\n"
-            "Do not translate.\n"
-            "Do not add extra advice.\n"
-            "Only speak the provided text.\n\n"
-            "Voice style:\n"
-            "* Friendly, calm, supportive, and clear.\n"
-            "* Suitable for Pakistani farmers.\n"
-            "* Slightly slow and easy to understand.\n"
-            "* Use natural pauses after headings and sentences.\n\n"
-            "Language pronunciation:\n"
-            f"* {lang_instruction}\n"
-            "* If text mixes Urdu/Roman Urdu/English, transition smoothly without changing the voice awkwardly.\n\n"
-            "Formatting cleanup:\n"
-            "* Do not read markdown symbols.\n"
-            "* Do not read asterisks, hashtags, bullets, or formatting markers.\n"
-            "* Clean headings naturally before speaking.\n"
-            "* Read abbreviations naturally, such as AI, API, TTS, gTTS.\n"
-            "* Do not say 'star star', 'hash', or markdown symbols."
-        )
-
-        full_prompt = f"{system_prompt}\n\nText: {cleaned_text}"
+        full_prompt = f"Read this text aloud clearly in a natural farmer-friendly voice: {cleaned_text}"
 
         # 3. Call API
         try:

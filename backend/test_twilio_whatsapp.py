@@ -1,4 +1,5 @@
 import sys
+sys.stdout.reconfigure(encoding='utf-8')
 import time
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
@@ -301,6 +302,47 @@ def test_sanitize_text_for_tts():
     
     print("sanitize_text_for_tts tests passed successfully!")
 
+def test_tts_service_no_instructions():
+    print("\nRunning test_tts_service_no_instructions...")
+    from services.tts_service import generate_tts_audio
+    
+    with patch("google.generativeai.GenerativeModel") as mock_model_class:
+        mock_model_instance = mock_model_class.return_value
+        mock_model_instance.generate_content.return_value = MagicMock()
+        
+        # We need to mock open/os.makedirs/pcm_to_wav/etc. so it doesn't write files or fail during parsing
+        with patch("services.tts_service.pcm_to_wav") as mock_pcm_to_wav, \
+             patch("builtins.open", create=True) as mock_open, \
+             patch("os.makedirs") as mock_makedirs:
+             
+             # Mock the audio response structure
+             mock_response = MagicMock()
+             candidate = MagicMock()
+             part = MagicMock()
+             part.inline_data.data = b"fake_pcm"
+             candidate.content.parts = [part]
+             mock_response.candidates = [candidate]
+             mock_model_instance.generate_content.return_value = mock_response
+             mock_pcm_to_wav.return_value = b"fake_wav"
+             
+             res = generate_tts_audio("ٹیسٹ خلاصہ", language_hint="urdu")
+             
+             assert res["success"] is True
+             # Check what was passed to generate_content
+             mock_model_instance.generate_content.assert_called_once()
+             call_args, call_kwargs = mock_model_instance.generate_content.call_args
+             prompt_sent = call_args[0]
+             
+             print("Prompt sent to Gemini TTS:", prompt_sent)
+             assert "Read this text aloud clearly" in prompt_sent
+             assert "ٹیسٹ خلاصہ" in prompt_sent
+             
+             # Check that it doesn't contain forbidden instructions
+             for forbidden in ["summarize", "explain", "rewrite", "generate response", "headings analysis", "markdown instructions"]:
+                 assert forbidden not in prompt_sent.lower()
+                 
+    print("test_tts_service_no_instructions passed successfully!")
+
 if __name__ == "__main__":
     test_twilio_webhook_skeleton()
     test_twilio_webhook_text_flow_and_state_transitions()
@@ -308,3 +350,4 @@ if __name__ == "__main__":
     test_generate_and_send_tts_summary_background_task()
     test_tts_standalone_endpoint()
     test_sanitize_text_for_tts()
+    test_tts_service_no_instructions()
