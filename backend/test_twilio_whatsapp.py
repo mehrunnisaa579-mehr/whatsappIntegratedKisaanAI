@@ -283,10 +283,11 @@ def test_tts_standalone_endpoint():
 def test_sanitize_text_for_tts():
     print("\nRunning sanitize_text_for_tts tests...")
     
-    # 1. Emojis, colons, XML, URLs, bullets, markdown removal
+    # 1. Emojis, colons, XML, URLs, bullets, markdown removal + Heading stripping
     raw_text = "<b>Possible Issue:</b> ⚠ **Cotton curl**.\n- Check leaves.\nhttps://google.com"
     clean_text = sanitize_text_for_tts(raw_text)
-    assert "Possible Issue" in clean_text
+    # The heading "Possible Issue" should be stripped
+    assert "Possible Issue" not in clean_text
     assert "Cotton curl" in clean_text
     assert "Check leaves" in clean_text
     assert "⚠" not in clean_text
@@ -296,9 +297,13 @@ def test_sanitize_text_for_tts():
     assert "<b>" not in clean_text
     
     # 2. Character limit trim
-    long_text = "A. " * 300  # 900 chars
-    clean_long = sanitize_text_for_tts(long_text)
-    assert len(clean_long) <= 655
+    long_text_en = "This is a sentence. " * 40  # ~800 chars
+    clean_long_en = sanitize_text_for_tts(long_text_en, language_hint="english")
+    assert len(clean_long_en) <= 550
+    
+    long_text_ur = "یہ ایک جملہ ہے۔ " * 40  # ~640 chars
+    clean_long_ur = sanitize_text_for_tts(long_text_ur, language_hint="urdu")
+    assert len(clean_long_ur) <= 280
     
     print("sanitize_text_for_tts tests passed successfully!")
 

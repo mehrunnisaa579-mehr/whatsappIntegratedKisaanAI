@@ -73,11 +73,12 @@ async def send_twilio_whatsapp_message(to_number: str, body: str = None, media_u
         logger.error("Failed to send Twilio WhatsApp message/media to %s: %s", to_number, str(e))
         return False
 
-def sanitize_text_for_tts(text: str) -> str:
+def sanitize_text_for_tts(text: str, language_hint: str = None) -> str:
     """
     Cleans headings, removes markdown, bullets, emojis, XML/TwiML, URLs,
     excessive punctuation, colons, and weird symbols.
-    Limits text length to ~650 characters (safe 400-700 range).
+    Limits text length to ~550 characters for English and ~280 characters
+    for Roman Urdu/Urdu script to prevent safety/modality generation errors.
     """
     if not text:
         return ""
@@ -88,28 +89,51 @@ def sanitize_text_for_tts(text: str) -> str:
     # 2. Remove URLs
     text = re.sub(r'https?://\S+|www\.\S+', '', text)
     
-    # 3. Replace colons (:) and dashes with spaces/commas for natural pause
+    # 3. Strip headings (with or without colons/spaces)
+    headings_pattern = re.compile(
+        r"(?i)\b(possible issue|risk level|recommended action|weather note|next step|mumkin masla|khatray ki satah|khatre ki satah|tajweez kardah amal|mosam ka khayal|agla qadam)\b\s*[:،,\-\s]*|"
+        r"(ممکنہ مسئلہ|خطرے کی سطح|تجویز کردہ عمل|موسم کا خیال|اگلا قدم)\s*[:،\-\s]*"
+    )
+    text = headings_pattern.sub("", text)
+    
+    # 4. Remove forbidden phrases/instructions
+    forbidden_pattern = re.compile(
+        r"(?i)\b(summarize this|read this|create audio summary|explain this|make a summary|generate response|headings analysis|markdown instructions)\b\s*"
+    )
+    text = forbidden_pattern.sub("", text)
+    
+    # 5. Replace colons (:) and dashes with spaces/commas for natural pause
     text = text.replace(":", ", ").replace("—", " ").replace("-", " ")
     
-    # 4. Remove emojis and weird symbols (allow letters, numbers, spaces, standard English and Urdu punctuation)
+    # 6. Remove emojis and weird symbols (allow letters, numbers, spaces, standard English and Urdu punctuation)
     text = re.sub(r'[^\w\s\.,\?!\(\)۔\u0600-\u06FF]', '', text)
     
-    # 5. Remove markdown symbols
+    # 7. Remove markdown symbols
     text = text.replace("**", "").replace("*", "").replace("__", "").replace("_", "")
     
-    # 6. Remove list bullets and numbers at the start of lines or within text
+    # 8. Remove list bullets and numbers at the start of lines or within text
     text = re.sub(r'^\s*[-*+•]\s*', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\s*\d+[\s\.)\-]*', '', text, flags=re.MULTILINE)
     
-    # 7. Normalize spaces and newlines
+    # 9. Normalize spaces and newlines
     text = re.sub(r'\s+', ' ', text).strip()
     
-    # 8. Limit length to ~650 characters max (within 400-700 range)
-    if len(text) > 650:
-        truncated = text[:650]
+    # 10. Limit length based on language script to prevent OTHER finish reason in TTS
+    has_urdu = any("\u0600" <= ch <= "\u06FF" for ch in text)
+    is_english = (language_hint == "english")
+    if not language_hint:
+        # Fallback detection
+        from utils.helpers import detect_language
+        detected = detect_language(text)
+        is_english = (detected == "english") and not has_urdu
+
+    limit = 550 if is_english else 280
+    
+    if len(text) > limit:
+        truncated = text[:limit]
         # Attempt to cut at a sentence ending (either English period or Urdu full stop)
         last_period = max(truncated.rfind('.'), truncated.rfind('۔'))
-        if last_period > 350:
+        if last_period > (limit - 100):
             text = truncated[:last_period + 1]
         else:
             text = truncated + "..."
@@ -124,11 +148,24 @@ async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, requ
         masked_number = to_number[:9] + "..." if to_number else "None"
         logger.info("Background task: generating TTS audio for %s (language_hint=%s)", masked_number, language_hint)
         
-        # Safe debug logs: log length and first 120 characters snippet only
-        summary_len = len(text_to_speak) if text_to_speak else 0
-        safe_snippet = text_to_speak[:120] if text_to_speak else ""
-        logger.info("Sanitized TTS Summary Length: %d characters", summary_len)
-        logger.info("Sanitized TTS Summary Snippet (first 120 chars): %s", safe_snippet)
+        # Determine transcript type (English, Roman Urdu, Urdu Script)
+        has_urdu_chars = any("\u0600" <= ch <= "\u06FF" for ch in text_to_speak)
+        if has_urdu_chars:
+            transcript_type = "Urdu script"
+        elif language_hint == "roman_urdu":
+            transcript_type = "Roman Urdu"
+        elif language_hint == "english":
+            transcript_type = "English"
+        else:
+            # Fallback detection
+            from utils.helpers import detect_language
+            detected_lang = detect_language(text_to_speak)
+            transcript_type = "Urdu script" if detected_lang == "urdu" else ("Roman Urdu" if detected_lang == "roman_urdu" else "English")
+            
+        logger.info("Detected language hint: %s", language_hint)
+        logger.info("Final TTS transcript length: %d", len(text_to_speak))
+        logger.info("First 150 characters of final transcript: %s", text_to_speak[:150])
+        logger.info("Transcript type: %s", transcript_type)
         
         # Generate audio using existing tts_service
         tts_result = generate_tts_audio(text_to_speak, language_hint=language_hint)
@@ -334,11 +371,19 @@ async def twilio_whatsapp_webhook(
                     lang_hint = detect_language(user_state.get("last_response_text"))
                 
                 text_to_speak = user_state.get("tts_summary")
-                if not text_to_speak:
+                if not text_to_speak or len(text_to_speak.strip()) < 30:
                     text_to_speak = generate_safe_tts_summary(user_state.get("last_response_text"), lang_hint)
                 
                 # Sanitize the summary text for TTS engine
-                text_to_speak = sanitize_text_for_tts(text_to_speak)
+                text_to_speak = sanitize_text_for_tts(text_to_speak, lang_hint)
+                
+                # Fallback if sanitization left it empty or too short
+                if len(text_to_speak.strip()) < 30:
+                    logger.warning("Sanitized text is too short. Applying sentence fallback from detailed response.")
+                    raw_text = user_state.get("last_response_text", "")
+                    from services.gemini_service import clean_and_shorten_section
+                    text_to_speak = clean_and_shorten_section(raw_text, 3)
+                    text_to_speak = sanitize_text_for_tts(text_to_speak, lang_hint)
                 
                 # Spawn TTS generation and send in background
                 background_tasks.add_task(
