@@ -168,7 +168,7 @@ def test_twilio_webhook_image_flow_and_background_task():
     with patch("routers.twilio_whatsapp.download_twilio_media", new_callable=AsyncMock) as mock_download, \
          patch("routers.twilio_whatsapp.run_crop_analysis", new_callable=AsyncMock) as mock_analyze, \
          patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send:
-             
+              
         mock_download.return_value = b"fake_image_bytes"
         mock_analyze.return_value = {
             "status": "success",
@@ -206,10 +206,15 @@ def test_twilio_webhook_image_flow_and_background_task():
 def test_generate_and_send_tts_summary_background_task():
     print("\nRunning background TTS generation and sending task tests...")
     
+    mock_stat_res = MagicMock()
+    mock_stat_res.st_size = 1000
+    
     # 1. Test Successful TTS Generation and Successful OGG Conversion
     with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
          patch("services.tts_service.convert_wav_to_ogg_opus") as mock_convert_ogg, \
-         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send:
+         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send, \
+         patch("pathlib.Path.exists", return_value=True), \
+         patch("pathlib.Path.stat", return_value=mock_stat_res):
               
          mock_generate_tts.return_value = {
               "success": True,
@@ -232,11 +237,13 @@ def test_generate_and_send_tts_summary_background_task():
               to_number="whatsapp:+923001234567",
               media_url="https://testserver/static/audio/tts_test_file.ogg"
           )
-          
-    # 2. Test Successful TTS Generation but OGG Conversion Fails (Fallback to WAV)
+           
+    # 2. Test Successful TTS Generation but OGG Conversion Fails (No WAV fallback, sends error text)
     with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
          patch("services.tts_service.convert_wav_to_ogg_opus") as mock_convert_ogg, \
-         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send:
+         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send, \
+         patch("pathlib.Path.exists", return_value=True), \
+         patch("pathlib.Path.stat", return_value=mock_stat_res):
               
          mock_generate_tts.return_value = {
               "success": True,
@@ -257,12 +264,14 @@ def test_generate_and_send_tts_summary_background_task():
          mock_convert_ogg.assert_called_once_with("tts_test_file.wav")
          mock_send.assert_called_once_with(
               to_number="whatsapp:+923001234567",
-              media_url="https://testserver/static/audio/tts_test_file.wav"
+              body="Audio summary could not be generated right now. Please try again."
           )
 
     # 3. Test TTS Generation Failure Fallback
     with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
-         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send:
+         patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send, \
+         patch("pathlib.Path.exists", return_value=True), \
+         patch("pathlib.Path.stat", return_value=mock_stat_res):
               
          mock_generate_tts.return_value = {
               "success": False,
@@ -279,9 +288,9 @@ def test_generate_and_send_tts_summary_background_task():
          
          mock_send.assert_called_once_with(
               to_number="whatsapp:+923001234567",
-              body="Sorry, FarmAI could not generate the audio summary right now."
+              body="Audio summary could not be generated right now. Please try again."
           )
-          
+           
     print("Background TTS task tests passed successfully!")
 
 def test_tts_standalone_endpoint():
@@ -453,10 +462,14 @@ def test_production_specific_flows():
     assert "Okay, no audio summary will be sent" in root.find("Message").text
 
     # 6. Test background task logs audio URL before sending even if Twilio returns 429
+    mock_stat_res = MagicMock()
+    mock_stat_res.st_size = 1000
     with patch("routers.twilio_whatsapp.generate_tts_audio") as mock_generate_tts, \
          patch("services.tts_service.convert_wav_to_ogg_opus") as mock_convert_ogg, \
          patch("routers.twilio_whatsapp.send_twilio_whatsapp_message", new_callable=AsyncMock) as mock_send, \
-         patch("routers.twilio_whatsapp.logger.info") as mock_logger_info:
+         patch("routers.twilio_whatsapp.logger.info") as mock_logger_info, \
+         patch("pathlib.Path.exists", return_value=True), \
+         patch("pathlib.Path.stat", return_value=mock_stat_res):
               
          mock_generate_tts.return_value = {
               "success": True,

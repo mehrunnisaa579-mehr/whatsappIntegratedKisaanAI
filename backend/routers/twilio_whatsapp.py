@@ -165,60 +165,87 @@ async def generate_and_send_tts_summary(to_number: str, text_to_speak: str, base
     """
     Background task to generate TTS audio and send it as a WhatsApp media message.
     """
+    current_stage = "init"
+    masked_number = to_number[:12] + "..." if to_number else "None"
     try:
-        masked_number = to_number[:9] + "..." if to_number else "None"
-        logger.info("Background task: generating TTS audio for %s (language_hint=%s)", masked_number, language_hint)
+        logger.info("Background task received base_url: %s", base_url)
+        logger.info("Generating safe TTS summary...")
         
-        # Safe debug logs: log length and first 120 characters snippet only
+        # Safe debug logs: log length only
         summary_len = len(text_to_speak) if text_to_speak else 0
-        safe_snippet = text_to_speak[:120] if text_to_speak else ""
-        logger.info("Sanitized TTS Summary Length: %d characters", summary_len)
-        logger.info("Sanitized TTS Summary Snippet (first 120 chars): %s", safe_snippet)
+        logger.info("Safe TTS summary generated. Length: %d", summary_len)
         
         # Generate audio using existing tts_service
+        current_stage = "generate_tts_audio"
+        logger.info("Calling generate_tts_audio for WhatsApp summary...")
         tts_result = generate_tts_audio(text_to_speak, language_hint=language_hint)
         
         if not tts_result.get("success"):
             logger.error("Failed to generate TTS audio in background: %s", tts_result.get("message"))
-            await send_twilio_whatsapp_message(
-                to_number=to_number,
-                body="Sorry, FarmAI could not generate the audio summary right now."
-            )
-            return
+            raise RuntimeError(f"TTS generation failed: {tts_result.get('message')}")
             
-        logger.info("WhatsApp TTS WAV generated successfully.")
         filename = tts_result["filename"]
+        logger.info("WhatsApp TTS WAV generated successfully: %s", filename)
         
-        # Convert WAV to OGG/Opus
-        from services.tts_service import convert_wav_to_ogg_opus
-        try:
-            ogg_filename = convert_wav_to_ogg_opus(filename)
-            logger.info("WhatsApp TTS audio converted to OGG successfully.")
-            filename_to_send = ogg_filename
-        except Exception as conv_err:
-            logger.exception("Failed to convert WAV to OGG: %s. Falling back to WAV.", str(conv_err))
-            filename_to_send = filename
+        # Check static WAV file exists
+        from pathlib import Path
+        from services.tts_service import STATIC_AUDIO_DIR
+        wav_path = Path(STATIC_AUDIO_DIR) / filename
+        if not wav_path.exists():
+            raise FileNotFoundError(f"WAV file does not exist: {wav_path}")
             
-        audio_url = f"{base_url}/static/audio/{filename_to_send}"
+        # Convert WAV to OGG/Opus
+        current_stage = "convert_wav_to_ogg"
+        logger.info("Starting WAV to OGG conversion...")
+        
+        from services.tts_service import convert_wav_to_ogg_opus
+        ogg_filename = convert_wav_to_ogg_opus(filename)
+        logger.info("WhatsApp TTS audio converted to OGG successfully: %s", ogg_filename)
+        
+        # Check static OGG file exists and has size > 0
+        ogg_path = Path(STATIC_AUDIO_DIR) / ogg_filename
+        if not ogg_path.exists():
+            raise FileNotFoundError(f"OGG file does not exist: {ogg_path}")
+        ogg_size = ogg_path.stat().st_size
+        logger.info("Verified OGG file size: %d bytes", ogg_size)
+        if ogg_size == 0:
+            raise RuntimeError("Generated OGG file is empty")
+            
+        audio_url = f"{base_url}/static/audio/{ogg_filename}"
         logger.info("Generated WhatsApp TTS audio URL: %s", audio_url)
         
+        # Public URL self-check before Twilio send
+        current_stage = "public_url_self_check"
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(audio_url, timeout=5.0)
+                logger.info(
+                    "Self-check response: status_code=%d, content-type=%s, content-length=%s",
+                    response.status_code,
+                    response.headers.get("content-type", ""),
+                    response.headers.get("content-length", "unknown")
+                )
+        except Exception as check_err:
+            logger.error("Self-check request failed: %s", str(check_err))
+            
         # Send media message via Twilio outbound helper
+        current_stage = "send_twilio_message"
+        logger.info("Sending OGG media URL to Twilio WhatsApp...")
         success = await send_twilio_whatsapp_message(
             to_number=to_number,
             media_url=audio_url
         )
         if not success:
-            logger.error("Failed to send outbound TTS audio message to %s", to_number)
-            await send_twilio_whatsapp_message(
-                to_number=to_number,
-                body="Sorry, FarmAI could not generate the audio summary right now."
-            )
+            raise RuntimeError("Twilio send returned failure status")
             
+        logger.info("Twilio media send completed.")
+        
     except Exception as e:
-        logger.error("Unexpected error in generate_and_send_tts_summary background task: %s", str(e))
+        logger.error("WhatsApp TTS background task failed at stage: %s, error: %s", current_stage, str(e))
+        # Send error text message instead of fallback to WAV
         await send_twilio_whatsapp_message(
             to_number=to_number,
-            body="Sorry, FarmAI could not generate the audio summary right now."
+            body="Audio summary could not be generated right now. Please try again."
         )
 
 async def analyze_image_in_background(
@@ -371,6 +398,9 @@ async def twilio_whatsapp_webhook(
         # 3. Handle yes/no confirmation responses if pending
         if user_state and user_state.get("pending_tts_confirmation"):
             if is_yes_word:
+                logger.info("WhatsApp YES detected for audio summary.")
+                logger.info("Pending audio summary state found.")
+                
                 # Clear pending confirmation flag
                 user_state["pending_tts_confirmation"] = False
                 user_state["updated_at"] = time.time()
@@ -395,6 +425,7 @@ async def twilio_whatsapp_webhook(
                 base_url = get_base_url(request)
                 
                 # Spawn TTS generation and send in background
+                logger.info("Starting WhatsApp TTS background task.")
                 background_tasks.add_task(
                     generate_and_send_tts_summary,
                     to_number=From,
