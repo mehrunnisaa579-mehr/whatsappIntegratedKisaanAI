@@ -23,6 +23,12 @@ This repository is the backend-only version of FarmAI, configured for WhatsApp /
 - **Old Deployment Safety:** The original production Render deployment and database are completely untouched and separate.
 - **Webhook Configuration:** Once deployed, your Twilio Sandbox / production webhook should point to:
   `https://NEW_RENDER_URL/webhook/twilio/whatsapp`
-- **Phased Testing:** 
+- **Phased Testing:**
   1. Text-only WhatsApp message processing will be tested first.
   2. Image, voice/STT, TTS, and location/weather endpoints will be added/connected to WhatsApp in later phases.
+
+## Contributors
+
+- [Muhammad Isa](https://github.com/m250526-del): AI Architect
+- [Mehrunnisa Shabbir](https://github.com/mehrunnisaa579-mehr): Backend Developer
+- [Ali Zafar](https://github.com/Slayer-10): Frontend Developer
